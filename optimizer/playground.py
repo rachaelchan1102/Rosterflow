@@ -14,6 +14,7 @@ from optimizer.data import add_musician as _add_musician
 from optimizer.data import add_show as _add_show
 from optimizer.data import delete_musician as _delete_musician
 from optimizer.data import delete_show as _delete_show
+from optimizer.data import set_weekly_availability as _set_weekly_availability
 from optimizer.data import update_musician as _update_musician
 from optimizer.data import update_show as _update_show
 
@@ -51,3 +52,6 @@ class PlaygroundStore:
 
     def delete_show(self, show_id: str) -> None:
         self.data = _delete_show(self.data, show_id)
+
+    def set_weekly_availability(self, musician_id: str, windows: list[dict]) -> None:
+        self.data = _set_weekly_availability(self.data, musician_id, windows)

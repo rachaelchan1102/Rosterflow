@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_BASE } from "../api";
+import AvailabilityGrid from "../AvailabilityGrid";
 
 interface Musician {
   musician_id: string;
@@ -64,15 +65,31 @@ function ErrorBanner({ message }: { message: string | null }) {
 function MusiciansSection() {
   const [musicians, setMusicians] = useState<Musician[]>([]);
   const [form, setForm] = useState<Musician>(EMPTY_MUSICIAN);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [availabilityFor, setAvailabilityFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () => apiCall("/api/musicians", "GET").then(setMusicians);
   useEffect(() => { refresh(); }, []);
 
-  const addMusician = () => {
+  const startEdit = (m: Musician) => {
     setError(null);
-    apiCall("/api/musicians", "POST", form)
-      .then(() => { setForm(EMPTY_MUSICIAN); refresh(); })
+    setEditingId(m.musician_id);
+    setForm(m);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm(EMPTY_MUSICIAN);
+  };
+
+  const submitMusician = () => {
+    setError(null);
+    const action = editingId
+      ? apiCall(`/api/musicians/${editingId}`, "PUT", form)
+      : apiCall("/api/musicians", "POST", form);
+    action
+      .then(() => { setForm(EMPTY_MUSICIAN); setEditingId(null); refresh(); })
       .catch((e) => setError(e.message));
   };
 
@@ -91,7 +108,7 @@ function MusiciansSection() {
         <thead>
           <tr>
             <th>ID</th><th>Name</th><th>Age</th><th>Instrument</th><th>Region</th>
-            <th>Monthly cap</th><th></th>
+            <th>Monthly cap</th><th colSpan={3}></th>
           </tr>
         </thead>
         <tbody>
@@ -103,15 +120,21 @@ function MusiciansSection() {
               <td>{m.instrument}</td>
               <td>{m.home_region}</td>
               <td>{m.max_shows_per_month}</td>
-              <td><button className="link-button" onClick={() => deleteMusician(m.musician_id)}>Delete</button></td>
+              <td><button className="link-button" onClick={() => startEdit(m)}>Edit</button></td>
+              <td><button className="link-button" onClick={() => setAvailabilityFor(m.musician_id)}>Availability</button></td>
+              <td><button className="link-button danger" onClick={() => deleteMusician(m.musician_id)}>Delete</button></td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <h3>Add a musician</h3>
+      {availabilityFor && (
+        <AvailabilityGrid musicianId={availabilityFor} onClose={() => setAvailabilityFor(null)} />
+      )}
+
+      <h3>{editingId ? `Edit ${editingId}` : "Add a musician"}</h3>
       <div className="add-form">
-        <input placeholder="ID (e.g. M99)" value={form.musician_id}
+        <input placeholder="ID (e.g. M99)" value={form.musician_id} disabled={!!editingId}
                onChange={(e) => setForm({ ...form, musician_id: e.target.value })} />
         <input placeholder="Name" value={form.display_name}
                onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
@@ -145,7 +168,8 @@ function MusiciansSection() {
                onChange={(e) => setForm({ ...form, typical_songs: Number(e.target.value) })} />
         <input type="number" placeholder="Max songs" value={form.max_songs}
                onChange={(e) => setForm({ ...form, max_songs: Number(e.target.value) })} />
-        <button onClick={addMusician}>Add musician</button>
+        <button onClick={submitMusician}>{editingId ? "Save changes" : "Add musician"}</button>
+        {editingId && <button className="secondary" onClick={cancelEdit}>Cancel</button>}
       </div>
     </section>
   );
@@ -155,6 +179,7 @@ function ShowsSection() {
   const [shows, setShows] = useState<Show[]>([]);
   const [facilities, setFacilities] = useState<Facility[]>([]);
   const [form, setForm] = useState<Show>(EMPTY_SHOW);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () => apiCall("/api/shows", "GET").then(setShows);
@@ -166,10 +191,24 @@ function ShowsSection() {
     });
   }, []);
 
-  const addShow = () => {
+  const startEdit = (s: Show) => {
     setError(null);
-    apiCall("/api/shows", "POST", form)
-      .then(() => { setForm({ ...EMPTY_SHOW, facility_id: form.facility_id }); refresh(); })
+    setEditingId(s.show_id);
+    setForm(s);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm((prev) => ({ ...EMPTY_SHOW, facility_id: prev.facility_id }));
+  };
+
+  const submitShow = () => {
+    setError(null);
+    const action = editingId
+      ? apiCall(`/api/shows/${editingId}`, "PUT", form)
+      : apiCall("/api/shows", "POST", form);
+    action
+      .then(() => { setForm({ ...EMPTY_SHOW, facility_id: form.facility_id }); setEditingId(null); refresh(); })
       .catch((e) => setError(e.message));
   };
 
@@ -189,7 +228,7 @@ function ShowsSection() {
       <ErrorBanner message={error} />
       <table className="data-table">
         <thead>
-          <tr><th>ID</th><th>Facility</th><th>Date</th><th>Time</th><th>Duration</th><th></th></tr>
+          <tr><th>ID</th><th>Facility</th><th>Date</th><th>Time</th><th>Duration</th><th colSpan={2}></th></tr>
         </thead>
         <tbody>
           {upcoming.map((s) => (
@@ -199,15 +238,16 @@ function ShowsSection() {
               <td>{s.date}</td>
               <td>{s.start_time}</td>
               <td>{s.duration_min} min</td>
-              <td><button className="link-button" onClick={() => deleteShow(s.show_id)}>Delete</button></td>
+              <td><button className="link-button" onClick={() => startEdit(s)}>Edit</button></td>
+              <td><button className="link-button danger" onClick={() => deleteShow(s.show_id)}>Delete</button></td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <h3>Add a show</h3>
+      <h3>{editingId ? `Edit ${editingId}` : "Add a show"}</h3>
       <div className="add-form">
-        <input placeholder="ID (e.g. S9999)" value={form.show_id}
+        <input placeholder="ID (e.g. S9999)" value={form.show_id} disabled={!!editingId}
                onChange={(e) => setForm({ ...form, show_id: e.target.value })} />
         <select value={form.facility_id} onChange={(e) => setForm({ ...form, facility_id: e.target.value })}>
           {facilities.map((f) => <option key={f.facility_id} value={f.facility_id}>{f.facility_id}</option>)}
@@ -216,7 +256,8 @@ function ShowsSection() {
         <input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
         <input type="number" placeholder="Duration (min)" value={form.duration_min}
                onChange={(e) => setForm({ ...form, duration_min: Number(e.target.value) })} />
-        <button onClick={addShow}>Add show</button>
+        <button onClick={submitShow}>{editingId ? "Save changes" : "Add show"}</button>
+        {editingId && <button className="secondary" onClick={cancelEdit}>Cancel</button>}
       </div>
     </section>
   );

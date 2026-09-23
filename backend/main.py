@@ -21,7 +21,7 @@ from optimizer.carpool import build_carpools
 from optimizer.data import Data, RecordConflictError, delete_musician
 from optimizer.metrics import compute_kpis, exceptions_queue
 from optimizer.playground import PlaygroundStore
-from optimizer.simulate import DEFAULT_CANCEL_P, simulate_fill_rate
+from optimizer.simulate import DEFAULT_CANCEL_P, estimate_new_show_feasibility, simulate_fill_rate, suggest_alternative_dates
 
 SAMPLE_DATA_DIR = Path(__file__).resolve().parent.parent / "sample_data"
 
@@ -163,6 +163,40 @@ def scenario(req: ScenarioRequest):
     return {"baseline": baseline_kpis, "scenario": scenario_kpis}
 
 
+class FeasibilityRequest(BaseModel):
+    facility_id: str
+    date: str
+
+
+def _feasibility_to_dict(feas) -> dict:
+    return {
+        "date": feas.date,
+        "probability_fully_staffed": feas.probability_fully_staffed,
+        "eligible_pool_size": feas.eligible_pool_size,
+        "excluded_day_conflict": feas.excluded_day_conflict,
+        "excluded_over_cap": feas.excluded_over_cap,
+        "excluded_guardian_range": feas.excluded_guardian_range,
+        "mean_available_count": feas.mean_available_count,
+        "mean_available_songs": feas.mean_available_songs,
+    }
+
+
+@app.post("/api/feasibility")
+def feasibility(req: FeasibilityRequest):
+    """"If a care home asks for this date, how likely is it we could staff it?" (SPEC.md's
+    pre-commitment question — see simulate.py). Uses the CURRENT store state, so it correctly
+    accounts for whatever's already been added/edited in the working tools screen."""
+    baseline = _load_and_solve()
+    requested = estimate_new_show_feasibility(baseline["data"], baseline["assignments"],
+                                              req.facility_id, req.date, n_runs=3000, seed=1)
+    alternatives = suggest_alternative_dates(baseline["data"], baseline["assignments"], req.facility_id,
+                                             req.date, window_days=14, n_runs=1500, top_n=3, seed=1)
+    return {
+        "requested": _feasibility_to_dict(requested),
+        "alternatives": [_feasibility_to_dict(a) for a in alternatives],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Working tools: add/edit/delete musicians and shows. Every write goes through
 # optimizer.playground.PlaygroundStore, which itself goes through data.py's CRUD functions —
@@ -209,6 +243,22 @@ def list_musicians():
 def create_musician(musician: MusicianIn):
     try:
         store.add_musician(musician.model_dump())
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}
+
+
+@app.get("/api/musicians/{musician_id}/availability")
+def get_musician_availability(musician_id: str):
+    wa = store.data.weekly_availability
+    return _records(wa[wa.musician_id == musician_id][["weekday", "start_time", "end_time"]])
+
+
+@app.put("/api/musicians/{musician_id}/availability")
+def set_musician_availability(musician_id: str, windows: list[dict[str, Any]] = Body(...)):
+    try:
+        store.set_weekly_availability(musician_id, windows)
     except RecordConflictError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _invalidate_cache()

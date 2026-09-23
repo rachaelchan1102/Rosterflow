@@ -328,3 +328,20 @@ def delete_show(data: Data, show_id: str) -> Data:
     raw["availability"] = raw["availability"][raw["availability"].show_id != show_id]
     raw["history_assignments"] = raw["history_assignments"][raw["history_assignments"].show_id != show_id]
     return _validate_and_build(raw)
+
+
+def set_weekly_availability(data: Data, musician_id: str, windows: list[dict]) -> Data:
+    """Replaces a musician's ENTIRE recurring weekly pattern with `windows` (each a dict with
+    weekday/start_time/end_time) — not an add or a merge. The UI's availability grid always
+    sends the musician's complete new pattern, since a user editing a when2meet-style grid is
+    setting the whole picture at once, not appending to the old one."""
+    raw = _to_raw_tables(data)
+    if musician_id not in raw["musicians"]["musician_id"].values:
+        raise RecordConflictError(f"musician_id {musician_id!r} does not exist")
+    wa = raw["weekly_availability"]
+    wa = wa[wa.musician_id != musician_id]
+    if windows:
+        new_rows = pd.DataFrame([{**w, "musician_id": musician_id} for w in windows])
+        wa = pd.concat([wa, new_rows], ignore_index=True)
+    raw["weekly_availability"] = wa
+    return _validate_and_build(raw)
