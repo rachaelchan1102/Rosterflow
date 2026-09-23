@@ -51,10 +51,12 @@ for i, (r, wd) in enumerate(zip(FAC_REGIONS, weekday_assignment), 1):
     lat, lng = jitter(REGIONS[r], 0.015)
     dur = int(rng.choice([45, 60, 60, 60]))
     songs = dur // 3
-    target = round(songs / 2.5)                       # ~2.5 songs/musician -> ~8 musicians at 60 min
+    base_target = round(songs / 2)                     # ~2 songs/musician -> ~10 musicians at 60 min
+    # target_musicians filled in below, once musician homes exist and we know how far this
+    # facility actually is from the volunteer pool — a remote facility realistically draws fewer.
     time = str(rng.choice(WEEKDAY_TIME_OPTIONS[wd]))
     fac.append(dict(facility_id=f"SH{i:02d}", display_name=f"SH {i}", region=r, lat=lat, lng=lng,
-                    show_duration_min=dur, songs_per_show=songs, target_musicians=target,
+                    show_duration_min=dur, songs_per_show=songs, base_target_musicians=base_target,
                     min_musicians=3, max_musicians=songs,      # everyone plays >=1 song -> can't exceed songs
                     has_piano_onsite=bool(rng.random() < 0.7),
                     preferred_slot=f"{wd} {time}"))
@@ -90,6 +92,19 @@ mus = pd.DataFrame(mus)
 dist = pd.DataFrame([dict(musician_id=m.musician_id, facility_id=f.facility_id,
                           distance_km=round(float(hav(m.home_lat, m.home_lng, f.lat, f.lng)) * 1.3, 1))
                      for m in mus.itertuples() for f in fac.itertuples()])
+
+# A facility far from where the volunteer pool actually lives realistically draws fewer people
+# than one that's central, even with the same songs_per_show. Scale each facility's target down
+# from its base (songs/2) once its actual average distance to the pool is known: facilities at or
+# below a 20km average keep the full base target; every km beyond that shaves the target down,
+# floored so it never drops below the min_musicians floor.
+avg_dist_by_fac = dist.groupby("facility_id").distance_km.mean()
+BASELINE_KM, KM_PER_TARGET_POINT = 20, 4
+fac["target_musicians"] = fac.apply(
+    lambda f: max(f.min_musicians, round(f.base_target_musicians
+                                         - max(avg_dist_by_fac[f.facility_id] - BASELINE_KM, 0) / KM_PER_TARGET_POINT)),
+    axis=1)
+fac = fac.drop(columns="base_target_musicians")
 
 ms = list(mus[["musician_id", "home_lat", "home_lng"]].itertuples())
 mdist_rows = []

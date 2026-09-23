@@ -1,8 +1,8 @@
-facility_id,display_name,region,lat,lng,show_duration_min,songs_per_show,target_musicians,min_musicians,max_musicians,has_piano_onsite,preferred_slot
-SH01,SH 1,Toronto-Downtown,43.6453,-79.3803,60,20,8,3,20,True,Sat 11:00
-SH02,SH 2,North York,43.7717,-79.409,60,20,8,3,20,False,Tue 18:30
-SH03,SH 3,Scarborough,43.777,-79.2729,45,15,6,3,15,True,Sun 14:00
-SH04,SH 4,Etobicoke,43.6632,-79.5207,45,15,6,3,15,True,Thu 18:30
-SH05,SH 5,Mississauga,43.6083,-79.6423,60,20,8,3,20,True,Sat 11:00
-SH06,SH 6,Markham,43.868,-79.3245,60,20,8,3,20,True,Wed 18:30
-SH07,SH 7,Vaughan,43.8465,-79.4779,60,20,8,3,20,True,Tue 18:30
+facility_id,display_name,region,lat,lng,show_duration_min,songs_per_show,min_musicians,max_musicians,has_piano_onsite,preferred_slot,target_musicians
+SH01,SH 1,Toronto-Downtown,43.6453,-79.3803,60,20,3,20,True,Sat 11:00,9
+SH02,SH 2,North York,43.7717,-79.409,60,20,3,20,False,Tue 18:30,10
+SH03,SH 3,Scarborough,43.777,-79.2729,45,15,3,15,True,Sun 14:00,7
+SH04,SH 4,Etobicoke,43.6632,-79.5207,45,15,3,15,True,Thu 18:30,7
+SH05,SH 5,Mississauga,43.6083,-79.6423,60,20,3,20,True,Sat 11:00,7
+SH06,SH 6,Markham,43.868,-79.3245,60,20,3,20,True,Wed 18:30,8
+SH07,SH 7,Vaughan,43.8465,-79.4779,60,20,3,20,True,Tue 18:30,9

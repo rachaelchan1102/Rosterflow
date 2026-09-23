@@ -36,7 +36,7 @@ class Weights:
     fully_staffed: int = 100_000   # per unit of: song shortfall, musician shortfall, missing pianist
     over_cap: int = 20_000         # per show over a musician's monthly cap — a release valve, not a target
     over_max_songs: int = 20_000   # per song asked beyond a musician's own stated max
-    target_headcount: int = 800    # per musician short of a show's target headcount (~8), above the 3-min floor
+    target_headcount: int = 2_500  # per musician short of a show's target headcount (~10), above the 3-min floor
     fairness: int = 1_000          # per show of deviation from a musician's fair-share target
     extra_song_ask: int = 200      # per song asked beyond a musician's typical (comfortable) amount
     travel: int = 50               # per km
@@ -140,7 +140,7 @@ def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Wei
 
         penalty_terms.append(weights.fully_staffed * (shortfall + understaff + no_pianist))
 
-        # soft, its own (smaller) tier: landing below the *target* headcount (~8 for a 60-min show)
+        # soft, its own (smaller) tier: landing below the *target* headcount (~10 for a 60-min show)
         # costs something even once the 3-musician floor is met — without this, the model is happy
         # to cover a show's songs with a handful of people pushed to their max instead of spreading
         # the opportunity across more of the available pool, which is the whole point of "everyone
