@@ -10,8 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
+from optimizer.geo import fallback_road_distance_km
 
 REQUIRED_COLUMNS = {
     "facilities": ["facility_id", "display_name", "region", "lat", "lng", "show_duration_min",
@@ -35,11 +36,10 @@ class DataValidationError(ValueError):
     """Raised with every problem found, not just the first, so a bad CSV can be fixed in one pass."""
 
 
-def _hav_km(lat1, lng1, lat2, lng2):
-    p = np.pi / 180
-    a = (np.sin((lat2 - lat1) * p / 2) ** 2
-         + np.cos(lat1 * p) * np.cos(lat2 * p) * np.sin((lng2 - lng1) * p / 2) ** 2)
-    return 12742 * np.arcsin(np.sqrt(a))
+class RecordConflictError(ValueError):
+    """Raised when a proposed add/edit/delete would break a rule _validate checks. The change is
+    rejected outright and nothing in the live Data object is touched — this is the real safety
+    net now that both deployments allow full add/edit/delete (see PROJECT_PLAN.md)."""
 
 
 def load_from_csv(csv_dir: str | Path) -> "Data":
@@ -48,18 +48,49 @@ def load_from_csv(csv_dir: str | Path) -> "Data":
     problems = _validate(raw)
     if problems:
         raise DataValidationError("\n".join(problems))
+    return _build_data(raw)
+
+
+def _build_data(raw: dict[str, pd.DataFrame]) -> "Data":
+    """Assumes `raw` has already passed _validate. Fills in any missing distance pairs (the
+    haversine fallback — real OSRM lookups are a caller's job, see distances.py) and wraps
+    everything in a Data object."""
+    raw = dict(raw)
     raw["distances"] = _fill_missing_musician_facility_distances(raw["musicians"], raw["facilities"], raw["distances"])
     raw["musician_distances"] = _fill_missing_musician_musician_distances(raw["musicians"], raw["musician_distances"])
     return Data(
-        facilities=raw["facilities"].set_index("facility_id", drop=False),
-        musicians=raw["musicians"].set_index("musician_id", drop=False),
-        shows=raw["shows"].set_index("show_id", drop=False),
-        availability=raw["availability"],
-        weekly_availability=raw["weekly_availability"],
-        musician_facility_km=raw["distances"],
-        musician_musician_km=raw["musician_distances"],
-        history_assignments=raw["history_assignments"],
+        facilities=raw["facilities"].reset_index(drop=True).set_index("facility_id", drop=False),
+        musicians=raw["musicians"].reset_index(drop=True).set_index("musician_id", drop=False),
+        shows=raw["shows"].reset_index(drop=True).set_index("show_id", drop=False),
+        availability=raw["availability"].reset_index(drop=True),
+        weekly_availability=raw["weekly_availability"].reset_index(drop=True),
+        musician_facility_km=raw["distances"].reset_index(drop=True),
+        musician_musician_km=raw["musician_distances"].reset_index(drop=True),
+        history_assignments=raw["history_assignments"].reset_index(drop=True),
     )
+
+
+def _to_raw_tables(data: "Data") -> dict[str, pd.DataFrame]:
+    """The inverse of _build_data — flattens a live Data object back into the plain dict of
+    tables _validate expects, so a proposed CRUD change can be checked with the exact same rules
+    a full load is checked with, not a second, parallel set of rules that could drift out of sync."""
+    return {
+        "facilities": data.facilities.reset_index(drop=True),
+        "musicians": data.musicians.reset_index(drop=True),
+        "shows": data.shows.reset_index(drop=True),
+        "availability": data.availability.reset_index(drop=True),
+        "weekly_availability": data.weekly_availability.reset_index(drop=True),
+        "distances": data.musician_facility_km.reset_index(drop=True),
+        "musician_distances": data.musician_musician_km.reset_index(drop=True),
+        "history_assignments": data.history_assignments.reset_index(drop=True),
+    }
+
+
+def _validate_and_build(raw: dict[str, pd.DataFrame]) -> "Data":
+    problems = _validate(raw)
+    if problems:
+        raise RecordConflictError("\n".join(problems))
+    return _build_data(raw)
 
 
 def _validate(raw: dict[str, pd.DataFrame]) -> list[str]:
@@ -130,7 +161,7 @@ def _fill_missing_musician_facility_distances(musicians: pd.DataFrame, facilitie
     for m in musicians.itertuples():
         for f in facilities.itertuples():
             if (m.musician_id, f.facility_id) not in have:
-                km = round(float(_hav_km(m.home_lat, m.home_lng, f.lat, f.lng)) * 1.3, 1)
+                km = round(fallback_road_distance_km(m.home_lat, m.home_lng, f.lat, f.lng), 1)
                 missing_rows.append(dict(musician_id=m.musician_id, facility_id=f.facility_id, distance_km=km))
     if not missing_rows:
         return distances
@@ -144,7 +175,7 @@ def _fill_missing_musician_musician_distances(musicians: pd.DataFrame, musician_
     for i, a in enumerate(ms):
         for b in ms[i + 1:]:
             if (a.musician_id, b.musician_id) not in have:
-                km = round(float(_hav_km(a.home_lat, a.home_lng, b.home_lat, b.home_lng)) * 1.3, 1)
+                km = round(fallback_road_distance_km(a.home_lat, a.home_lng, b.home_lat, b.home_lng), 1)
                 missing_rows.append(dict(m1=a.musician_id, m2=b.musician_id, km=km))
                 missing_rows.append(dict(m1=b.musician_id, m2=a.musician_id, km=km))
     if not missing_rows:
@@ -184,3 +215,76 @@ class Data:
         if age >= 17:
             return True
         return self.distance_to_facility(musician_id, facility_id) <= max_km
+
+
+# ---------------------------------------------------------------------------
+# CRUD — add/edit/delete musicians and shows. Every one of these runs the exact same _validate
+# suite a full CSV load goes through, on a COPY of the tables — if anything fails, the original
+# `data` passed in is completely untouched, nothing is left half-applied.
+# ---------------------------------------------------------------------------
+
+def add_musician(data: Data, musician: dict) -> Data:
+    raw = _to_raw_tables(data)
+    raw["musicians"] = pd.concat([raw["musicians"], pd.DataFrame([musician])], ignore_index=True)
+    return _validate_and_build(raw)
+
+
+def update_musician(data: Data, musician_id: str, changes: dict) -> Data:
+    raw = _to_raw_tables(data)
+    musicians = raw["musicians"]
+    if musician_id not in musicians["musician_id"].values:
+        raise RecordConflictError(f"musician_id {musician_id!r} does not exist")
+    idx = musicians.index[musicians.musician_id == musician_id][0]
+    for col, value in changes.items():
+        musicians.loc[idx, col] = value
+    return _validate_and_build(raw)
+
+
+def delete_musician(data: Data, musician_id: str) -> Data:
+    """Cascades: also removes this musician's availability, weekly pattern, distance, and
+    history rows. Without that, they'd be left as orphaned rows pointing at a musician_id that
+    no longer exists — _validate's foreign-key check would (correctly) reject the delete."""
+    raw = _to_raw_tables(data)
+    musicians = raw["musicians"]
+    if musician_id not in musicians["musician_id"].values:
+        raise RecordConflictError(f"musician_id {musician_id!r} does not exist")
+    raw["musicians"] = musicians[musicians.musician_id != musician_id]
+    raw["availability"] = raw["availability"][raw["availability"].musician_id != musician_id]
+    raw["weekly_availability"] = raw["weekly_availability"][raw["weekly_availability"].musician_id != musician_id]
+    raw["distances"] = raw["distances"][raw["distances"].musician_id != musician_id]
+    md = raw["musician_distances"]
+    raw["musician_distances"] = md[(md.m1 != musician_id) & (md.m2 != musician_id)]
+    raw["history_assignments"] = raw["history_assignments"][raw["history_assignments"].musician_id != musician_id]
+    return _validate_and_build(raw)
+
+
+def add_show(data: Data, show: dict) -> Data:
+    """`show` needs its own show_id — this layer doesn't generate one, since a UI or a Neon
+    sequence is better placed to guarantee uniqueness than a guess made here."""
+    raw = _to_raw_tables(data)
+    raw["shows"] = pd.concat([raw["shows"], pd.DataFrame([show])], ignore_index=True)
+    return _validate_and_build(raw)
+
+
+def update_show(data: Data, show_id: str, changes: dict) -> Data:
+    raw = _to_raw_tables(data)
+    shows = raw["shows"]
+    if show_id not in shows["show_id"].values:
+        raise RecordConflictError(f"show_id {show_id!r} does not exist")
+    idx = shows.index[shows.show_id == show_id][0]
+    for col, value in changes.items():
+        shows.loc[idx, col] = value
+    return _validate_and_build(raw)
+
+
+def delete_show(data: Data, show_id: str) -> Data:
+    """Cascades: also removes this show's availability and history rows, same reasoning as
+    delete_musician — an orphaned row pointing at a deleted show_id would fail the FK check."""
+    raw = _to_raw_tables(data)
+    shows = raw["shows"]
+    if show_id not in shows["show_id"].values:
+        raise RecordConflictError(f"show_id {show_id!r} does not exist")
+    raw["shows"] = shows[shows.show_id != show_id]
+    raw["availability"] = raw["availability"][raw["availability"].show_id != show_id]
+    raw["history_assignments"] = raw["history_assignments"][raw["history_assignments"].show_id != show_id]
+    return _validate_and_build(raw)
