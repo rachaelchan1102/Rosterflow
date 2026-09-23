@@ -7,18 +7,20 @@ Runs against the playground's synthetic CSVs for now; swapping load_from_csv for
 would need to change.
 """
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
 from optimizer.assignment import solve_assignment
 from optimizer.backups import assign_backups
 from optimizer.carpool import build_carpools
-from optimizer.data import Data, delete_musician, load_from_csv
+from optimizer.data import Data, RecordConflictError, delete_musician
 from optimizer.metrics import compute_kpis, exceptions_queue
+from optimizer.playground import PlaygroundStore
 from optimizer.simulate import DEFAULT_CANCEL_P, simulate_fill_rate
 
 SAMPLE_DATA_DIR = Path(__file__).resolve().parent.parent / "sample_data"
@@ -32,7 +34,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# One in-memory store for the whole demo session — every endpoint reads/writes this same
+# PlaygroundStore, so an edit in the working-tools screen is what the control tower and
+# scenario planner actually see on their next request. Real deployment would swap this for a
+# Data object loaded from Neon (optimizer/data.py's load_from_db) — nothing else here changes.
+store = PlaygroundStore.fresh(SAMPLE_DATA_DIR)
+
 _cache: dict = {}
+
+
+def _invalidate_cache() -> None:
+    """Called after any CRUD write succeeds — the next control-tower/scenario request re-solves
+    against the store's new state instead of serving a stale cached schedule."""
+    _cache.clear()
 
 
 def _run_pipeline(data: Data) -> dict:
@@ -49,10 +63,10 @@ def _run_pipeline(data: Data) -> dict:
 
 def _load_and_solve() -> dict:
     """Computed once and cached in memory — a CP-SAT solve takes ~15-20s, so this shouldn't run
-    on every request. Cache invalidation (recompute after a CRUD edit) is a later piece; for now
-    this always serves the same synthetic dataset's solved schedule."""
+    on every request. Cleared by _invalidate_cache() after any CRUD write succeeds, so an edit is
+    reflected on the next request instead of serving a stale schedule."""
     if "result" not in _cache:
-        _cache["result"] = _run_pipeline(load_from_csv(SAMPLE_DATA_DIR))
+        _cache["result"] = _run_pipeline(store.data)
     return _cache["result"]
 
 
@@ -147,3 +161,115 @@ def scenario(req: ScenarioRequest):
     scenario_kpis["fill_rate"] = float(scenario_fill.fill_rate.mean())
 
     return {"baseline": baseline_kpis, "scenario": scenario_kpis}
+
+
+# ---------------------------------------------------------------------------
+# Working tools: add/edit/delete musicians and shows. Every write goes through
+# optimizer.playground.PlaygroundStore, which itself goes through data.py's CRUD functions —
+# the exact same validation a full CSV load is checked with. A rejected write here becomes a
+# plain-language 400, not a raw stack trace (SPEC.md 12.3's "usable by a non-coder").
+# ---------------------------------------------------------------------------
+
+class MusicianIn(BaseModel):
+    musician_id: str
+    display_name: str
+    age: int
+    instrument: str
+    home_region: str
+    home_lat: float
+    home_lng: float
+    transport: str
+    can_drive: bool
+    years_with_org: float
+    max_shows_per_month: int
+    min_songs: int
+    typical_songs: int
+    max_songs: int
+
+
+class ShowIn(BaseModel):
+    show_id: str
+    facility_id: str
+    date: str
+    start_time: str
+    duration_min: int
+    period: str = "upcoming"
+
+
+def _records(df: pd.DataFrame) -> list[dict]:
+    return df.reset_index(drop=True).to_dict(orient="records")
+
+
+@app.get("/api/musicians")
+def list_musicians():
+    return _records(store.data.musicians)
+
+
+@app.post("/api/musicians")
+def create_musician(musician: MusicianIn):
+    try:
+        store.add_musician(musician.model_dump())
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}
+
+
+@app.put("/api/musicians/{musician_id}")
+def update_musician_endpoint(musician_id: str, changes: dict[str, Any] = Body(...)):
+    try:
+        store.update_musician(musician_id, changes)
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}
+
+
+@app.delete("/api/musicians/{musician_id}")
+def delete_musician_endpoint(musician_id: str):
+    try:
+        store.delete_musician(musician_id)
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}
+
+
+@app.get("/api/shows")
+def list_shows():
+    return _records(store.data.shows)
+
+
+@app.get("/api/facilities")
+def list_facilities():
+    return _records(store.data.facilities)
+
+
+@app.post("/api/shows")
+def create_show(show: ShowIn):
+    try:
+        store.add_show(show.model_dump())
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}
+
+
+@app.put("/api/shows/{show_id}")
+def update_show_endpoint(show_id: str, changes: dict[str, Any] = Body(...)):
+    try:
+        store.update_show(show_id, changes)
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}
+
+
+@app.delete("/api/shows/{show_id}")
+def delete_show_endpoint(show_id: str):
+    try:
+        store.delete_show(show_id)
+    except RecordConflictError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _invalidate_cache()
+    return {"status": "ok"}

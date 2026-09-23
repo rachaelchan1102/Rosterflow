@@ -176,3 +176,88 @@ hr {
 .comparison-table td:not(:first-child) {
   font-weight: 600;
 }
+
+section {
+  margin: 24px 0 40px;
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 28px 0 12px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table th {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--critical);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  max-width: 760px;
+}
+
+.add-form input,
+.add-form select {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--surface);
+}
+
+.add-form input[type="number"] {
+  width: 90px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.add-form button {
+  background: #2a78d6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.working-tools-error {
+  padding: 8px 0;
+  font-size: 0.9rem;
+}

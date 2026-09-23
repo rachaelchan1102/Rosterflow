@@ -10,6 +10,9 @@ export default function Layout() {
         <NavLink to="/scenario" className={({ isActive }) => (isActive ? "active" : "")}>
           Scenario planner
         </NavLink>
+        <NavLink to="/tools" className={({ isActive }) => (isActive ? "active" : "")}>
+          Working tools
+        </NavLink>
       </nav>
       <Outlet />
     </div>
