@@ -184,7 +184,12 @@ def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Wei
         understaff_vars[s.show_id] = understaff
 
         no_pianist = model.NewBoolVar(f"no_pianist_{s.show_id}")
-        model.Add(pianist_sum >= 1).OnlyEnforceIf(no_pianist.Not())
+        if isinstance(pianist_sum, int):
+            # No pianist can play this show at all. `0 >= 1` would be a plain Python False, which
+            # CP-SAT reads as an impossible constraint — so take the penalty instead of failing.
+            model.Add(no_pianist == 1)
+        else:
+            model.Add(pianist_sum >= 1).OnlyEnforceIf(no_pianist.Not())
         no_pianist_vars[s.show_id] = no_pianist
 
         penalty_terms.append(weights.fully_staffed * (shortfall + understaff + no_pianist))
@@ -209,7 +214,10 @@ def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Wei
         here = pairs_by_musician.get(m.musician_id, [])
         played = sum(x[p] for p in here) if here else 0
         cap_here = int(m.max_shows_per_month) * months_in_horizon
-        target = round(avg_util * cap_here)
+        # When demand outstrips the whole roster's capacity (avg_util > 1), a fair share still
+        # can't exceed someone's own cap — and letting it would push the target past dev's bound,
+        # making the whole model infeasible rather than just short-staffed.
+        target = min(round(avg_util * cap_here), cap_here)
         dev = model.NewIntVar(0, max(cap_here, 1), f"dev_{m.musician_id}")
         model.Add(dev >= played - target)
         model.Add(dev >= target - played)
