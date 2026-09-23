@@ -1,276 +1,288 @@
-import { useEffect, useState } from "react";
-import { API_BASE } from "../api";
-import AvailabilityGrid from "../AvailabilityGrid";
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../api";
+import { useApp } from "../AppState";
+import { StatusBadge } from "../components/Status";
+import { formatDate, formatMonth } from "../format";
+import type { Musician, ScheduleView, ShowSummary } from "../types";
 
-interface Musician {
-  musician_id: string;
-  display_name: string;
-  age: number;
-  instrument: string;
-  home_region: string;
-  home_lat: number;
-  home_lng: number;
-  transport: string;
-  can_drive: boolean;
-  years_with_org: number;
-  max_shows_per_month: number;
-  min_songs: number;
-  typical_songs: number;
-  max_songs: number;
+const PAGE_SIZE = 20;
+type Tab = "musicians" | "availability" | "shows";
+
+function useSort<T>(rows: T[], initial: keyof T) {
+  const [key, setKey] = useState<keyof T>(initial);
+  const [asc, setAsc] = useState(true);
+  const sorted = useMemo(() => [...rows].sort((a, b) => {
+    const x = a[key], y = b[key];
+    const cmp = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
+    return asc ? cmp : -cmp;
+  }), [rows, key, asc]);
+  const header = (k: keyof T, label: string) => (
+    <th>
+      <button className="sort-header" onClick={() => { if (k === key) setAsc(!asc); else { setKey(k); setAsc(true); } }}>
+        {label}{k === key ? (asc ? " ▲" : " ▼") : ""}
+      </button>
+    </th>
+  );
+  return { sorted, header };
 }
 
-interface Show {
-  show_id: string;
-  facility_id: string;
-  date: string;
-  start_time: string;
-  duration_min: number;
-  period: string;
-}
-
-interface Facility {
-  facility_id: string;
-  display_name: string;
-}
-
-const EMPTY_MUSICIAN: Musician = {
-  musician_id: "", display_name: "", age: 18, instrument: "piano",
-  home_region: "", home_lat: 43.65, home_lng: -79.38, transport: "car",
-  can_drive: true, years_with_org: 0, max_shows_per_month: 2,
-  min_songs: 1, typical_songs: 2, max_songs: 3,
-};
-
-const EMPTY_SHOW: Show = {
-  show_id: "", facility_id: "", date: "", start_time: "14:00", duration_min: 60, period: "upcoming",
-};
-
-async function apiCall(path: string, method: string, body?: unknown) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `Request failed (${res.status})`);
-  }
-  return res.json();
-}
-
-function ErrorBanner({ message }: { message: string | null }) {
-  if (!message) return null;
-  return <p className="error working-tools-error">{message}</p>;
-}
-
-function MusiciansSection() {
+function MusiciansTab() {
+  const { version, refresh, openPanel, showToast } = useApp();
   const [musicians, setMusicians] = useState<Musician[]>([]);
-  const [form, setForm] = useState<Musician>(EMPTY_MUSICIAN);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [availabilityFor, setAvailabilityFor] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkCap, setBulkCap] = useState(2);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = () => apiCall("/api/musicians", "GET").then(setMusicians);
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    api<Musician[]>("/api/musicians").then(setMusicians);
+  }, [version]);
 
-  const startEdit = (m: Musician) => {
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? musicians.filter((m) => [m.musician_id, m.display_name, m.instrument, m.home_region]
+      .some((f) => f.toLowerCase().includes(q))) : musicians;
+  }, [musicians, query]);
+  const { sorted, header } = useSort(filtered, "musician_id");
+  const pages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const current = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const toggle = (id: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const allOnPage = current.length > 0 && current.every((m) => selected.has(m.musician_id));
+  const togglePage = () => setSelected((prev) => {
+    const next = new Set(prev);
+    current.forEach((m) => (allOnPage ? next.delete(m.musician_id) : next.add(m.musician_id)));
+    return next;
+  });
+
+  const run = (fn: () => Promise<unknown>, msg: string) => {
     setError(null);
-    setEditingId(m.musician_id);
-    setForm(m);
+    fn().then(() => { showToast(msg); setSelected(new Set()); refresh(); }).catch((e) => setError(e.message));
   };
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    setForm(EMPTY_MUSICIAN);
-  };
-
-  const submitMusician = () => {
-    setError(null);
-    const action = editingId
-      ? apiCall(`/api/musicians/${editingId}`, "PUT", form)
-      : apiCall("/api/musicians", "POST", form);
-    action
-      .then(() => { setForm(EMPTY_MUSICIAN); setEditingId(null); refresh(); })
-      .catch((e) => setError(e.message));
-  };
-
-  const deleteMusician = (id: string) => {
-    setError(null);
-    apiCall(`/api/musicians/${id}`, "DELETE")
-      .then(refresh)
-      .catch((e) => setError(e.message));
+  const remove = (m: Musician) => {
+    if (window.confirm(`Remove ${m.display_name} from the roster? Their shows, backups and availability go with them.`)) {
+      run(() => api(`/api/musicians/${m.musician_id}`, { method: "DELETE" }), `${m.display_name} removed`);
+    }
   };
 
   return (
     <section>
-      <h2>Musicians</h2>
-      <ErrorBanner message={error} />
+      <div className="toolbar">
+        <input className="search" placeholder="Search name, instrument, region…" value={query}
+               onChange={(e) => { setQuery(e.target.value); setPage(0); }} />
+        <span className="muted small">{filtered.length} musician{filtered.length !== 1 ? "s" : ""}</span>
+        <button className="button" onClick={() => openPanel({ kind: "musicianForm" })}>+ Add musician</button>
+      </div>
+
+      {selected.size > 0 && (
+        <div className="bulk-bar">
+          <strong>{selected.size} selected</strong>
+          <label className="inline">Set monthly cap to
+            <input type="number" min={0} max={8} value={bulkCap} onChange={(e) => setBulkCap(Number(e.target.value))} />
+          </label>
+          <button className="button secondary" onClick={() => run(
+            () => api("/api/musicians/bulk-update", { method: "POST", body: { musician_ids: [...selected], changes: { max_shows_per_month: bulkCap } } }),
+            `Updated ${selected.size} musicians`)}>Apply</button>
+          <button className="button secondary danger" onClick={() => {
+            if (window.confirm(`Remove ${selected.size} musicians from the roster?`)) {
+              run(() => api("/api/musicians/bulk-delete", { method: "POST", body: { musician_ids: [...selected] } }),
+                  `Removed ${selected.size} musicians`);
+            }
+          }}>Remove</button>
+          <button className="link-button" onClick={() => setSelected(new Set())}>Clear</button>
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+
       <table className="data-table">
         <thead>
           <tr>
-            <th>ID</th><th>Name</th><th>Age</th><th>Instrument</th><th>Region</th>
-            <th>Monthly cap</th><th colSpan={3}></th>
+            <th><input type="checkbox" checked={allOnPage} onChange={togglePage} aria-label="Select all on this page" /></th>
+            {header("display_name", "Name")}{header("instrument", "Instrument")}{header("age", "Age")}
+            {header("home_region", "Region")}{header("max_shows_per_month", "Cap / month")}<th />
           </tr>
         </thead>
         <tbody>
-          {musicians.map((m) => (
-            <tr key={m.musician_id}>
-              <td>{m.musician_id}</td>
-              <td>{m.display_name}</td>
-              <td>{m.age}</td>
+          {current.map((m) => (
+            <tr key={m.musician_id} className={selected.has(m.musician_id) ? "selected" : ""}>
+              <td><input type="checkbox" checked={selected.has(m.musician_id)} onChange={() => toggle(m.musician_id)} /></td>
+              <td>
+                <button className="person-name" onClick={() => openPanel({ kind: "musician", id: m.musician_id })}>{m.display_name}</button>
+                <span className="muted small"> {m.musician_id}</span>
+              </td>
               <td>{m.instrument}</td>
+              <td>{m.age}{m.age < 17 && <span className="tag" title="Needs a guardian to drive">guardian</span>}</td>
               <td>{m.home_region}</td>
               <td>{m.max_shows_per_month}</td>
-              <td><button className="link-button" onClick={() => startEdit(m)}>Edit</button></td>
-              <td><button className="link-button" onClick={() => setAvailabilityFor(m.musician_id)}>Availability</button></td>
-              <td><button className="link-button danger" onClick={() => deleteMusician(m.musician_id)}>Delete</button></td>
+              <td className="icon-actions">
+                <button title="Edit details" onClick={() => openPanel({ kind: "musicianForm", id: m.musician_id })}>✎</button>
+                <button title="Edit weekly availability" onClick={() => openPanel({ kind: "availability", id: m.musician_id })}>◷</button>
+                <button title="Remove from roster" className="danger" onClick={() => remove(m)}>✕</button>
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
-
-      {availabilityFor && (
-        <AvailabilityGrid musicianId={availabilityFor} onClose={() => setAvailabilityFor(null)} />
+      {pages > 1 && (
+        <div className="pager">
+          <button className="button secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>‹ Prev</button>
+          <span className="small muted">Page {page + 1} of {pages}</span>
+          <button className="button secondary" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>Next ›</button>
+        </div>
       )}
+    </section>
+  );
+}
 
-      <h3>{editingId ? `Edit ${editingId}` : "Add a musician"}</h3>
-      <div className="add-form">
-        <input placeholder="ID (e.g. M99)" value={form.musician_id} disabled={!!editingId}
-               onChange={(e) => setForm({ ...form, musician_id: e.target.value })} />
-        <input placeholder="Name" value={form.display_name}
-               onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-        <input type="number" placeholder="Age" value={form.age}
-               onChange={(e) => setForm({ ...form, age: Number(e.target.value) })} />
-        <select value={form.instrument} onChange={(e) => setForm({ ...form, instrument: e.target.value })}>
-          <option value="piano">piano</option>
-          <option value="guitar">guitar</option>
-          <option value="violin">violin</option>
-          <option value="cello">cello</option>
-        </select>
-        <input placeholder="Home region" value={form.home_region}
-               onChange={(e) => setForm({ ...form, home_region: e.target.value })} />
-        <input type="number" step="0.0001" placeholder="Home lat" value={form.home_lat}
-               onChange={(e) => setForm({ ...form, home_lat: Number(e.target.value) })} />
-        <input type="number" step="0.0001" placeholder="Home lng" value={form.home_lng}
-               onChange={(e) => setForm({ ...form, home_lng: Number(e.target.value) })} />
-        <select value={form.transport} onChange={(e) => setForm({ ...form, transport: e.target.value })}>
-          <option value="car">car</option>
-          <option value="transit">transit</option>
-          <option value="guardian">guardian</option>
-        </select>
-        <label className="checkbox-label">
-          <input type="checkbox" checked={form.can_drive}
-                 onChange={(e) => setForm({ ...form, can_drive: e.target.checked })} />
-          Can drive
-        </label>
-        <input type="number" placeholder="Monthly cap" value={form.max_shows_per_month}
-               onChange={(e) => setForm({ ...form, max_shows_per_month: Number(e.target.value) })} />
-        <input type="number" placeholder="Typical songs" value={form.typical_songs}
-               onChange={(e) => setForm({ ...form, typical_songs: Number(e.target.value) })} />
-        <input type="number" placeholder="Max songs" value={form.max_songs}
-               onChange={(e) => setForm({ ...form, max_songs: Number(e.target.value) })} />
-        <button onClick={submitMusician}>{editingId ? "Save changes" : "Add musician"}</button>
-        {editingId && <button className="secondary" onClick={cancelEdit}>Cancel</button>}
+interface Heatmap {
+  dates: { date: string; weekday: string; day: number; show_count: number; free_count: number }[];
+  rows: { musician_id: string; name: string; instrument: string; hours: number[] }[];
+}
+
+function AvailabilityTab() {
+  const { version, openPanel } = useApp();
+  const [data, setData] = useState<Heatmap | null>(null);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    api<Heatmap>("/api/availability-heatmap").then(setData);
+  }, [version]);
+
+  if (!data) return <p className="muted">Loading…</p>;
+  const q = query.trim().toLowerCase();
+  const rows = q ? data.rows.filter((r) => `${r.name} ${r.instrument} ${r.musician_id}`.toLowerCase().includes(q)) : data.rows;
+  const monthStarts = new Set(data.dates.filter((d) => d.day === 1).map((d) => d.date));
+
+  return (
+    <section>
+      <div className="toolbar">
+        <input className="search" placeholder="Filter musicians…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <span className="small muted">
+          Darker = more hours free that day, from each musician's usual weekly pattern. Days with shows are marked ●.
+        </span>
+      </div>
+      <div className="heatmap-scroll">
+        <table className="heatmap">
+          <thead>
+            <tr>
+              <th className="heatmap-name" />
+              {data.dates.map((d) => (
+                <th key={d.date} className={`${d.show_count ? "has-show" : ""} ${monthStarts.has(d.date) ? "month-start" : ""}`}
+                    title={`${formatDate(d.date)} · ${d.show_count} show${d.show_count !== 1 ? "s" : ""}`}>
+                  {monthStarts.has(d.date) && <span className="heatmap-month">{formatMonth(d.date.slice(0, 7))}</span>}
+                  <span>{d.weekday[0]}</span><span>{d.day}</span>{d.show_count > 0 && <span className="show-dot">●</span>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.musician_id}>
+                <th className="heatmap-name">
+                  <button className="person-name" onClick={() => openPanel({ kind: "musician", id: r.musician_id })}>{r.name}</button>
+                </th>
+                {r.hours.map((h, i) => (
+                  <td key={i} className={monthStarts.has(data.dates[i].date) ? "month-start" : ""}
+                      style={{ background: h > 0 ? `color-mix(in srgb, #2a78d6 ${Math.round(20 + (h / 12) * 80)}%, var(--surface))` : undefined }}
+                      title={`${r.name} · ${formatDate(data.dates[i].date)} · ${h ? `${h}h free` : "not usually free"}`} />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th className="heatmap-name small">Free that day</th>
+              {data.dates.map((d) => (
+                <td key={d.date} className={`heatmap-count ${d.free_count < 10 ? "low" : ""}`}>{d.free_count}</td>
+              ))}
+            </tr>
+          </tfoot>
+        </table>
       </div>
     </section>
   );
 }
 
-function ShowsSection() {
-  const [shows, setShows] = useState<Show[]>([]);
-  const [facilities, setFacilities] = useState<Facility[]>([]);
-  const [form, setForm] = useState<Show>(EMPTY_SHOW);
-  const [editingId, setEditingId] = useState<string | null>(null);
+function ShowsTab() {
+  const { version, refresh, openPanel, showToast } = useApp();
+  const [shows, setShows] = useState<ShowSummary[]>([]);
+  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = () => apiCall("/api/shows", "GET").then(setShows);
   useEffect(() => {
-    refresh();
-    apiCall("/api/facilities", "GET").then((f: Facility[]) => {
-      setFacilities(f);
-      if (f.length) setForm((prev) => ({ ...prev, facility_id: f[0].facility_id }));
-    });
-  }, []);
+    api<ScheduleView>("/api/schedule").then((v) => setShows(v.shows));
+  }, [version]);
 
-  const startEdit = (s: Show) => {
+  const q = query.trim().toLowerCase();
+  const filtered = q ? shows.filter((s) => `${s.facility_name} ${s.date}`.toLowerCase().includes(q)) : shows;
+  const { sorted, header } = useSort(filtered, "date");
+
+  const remove = (s: ShowSummary) => {
+    if (!window.confirm(`Remove ${s.facility_name} on ${formatDate(s.date)}? Everyone scheduled on it comes off.`)) return;
     setError(null);
-    setEditingId(s.show_id);
-    setForm(s);
-  };
-
-  const cancelEdit = () => {
-    setEditingId(null);
-    setForm((prev) => ({ ...EMPTY_SHOW, facility_id: prev.facility_id }));
-  };
-
-  const submitShow = () => {
-    setError(null);
-    const action = editingId
-      ? apiCall(`/api/shows/${editingId}`, "PUT", form)
-      : apiCall("/api/shows", "POST", form);
-    action
-      .then(() => { setForm({ ...EMPTY_SHOW, facility_id: form.facility_id }); setEditingId(null); refresh(); })
+    api(`/api/shows/${s.show_id}`, { method: "DELETE" })
+      .then(() => { showToast("Show removed"); refresh(); })
       .catch((e) => setError(e.message));
   };
-
-  const deleteShow = (id: string) => {
-    setError(null);
-    apiCall(`/api/shows/${id}`, "DELETE")
-      .then(refresh)
-      .catch((e) => setError(e.message));
-  };
-
-  const upcoming = shows.filter((s) => s.period === "upcoming");
 
   return (
     <section>
-      <h2>Shows</h2>
-      <p className="subtitle">Upcoming shows only ({upcoming.length} of {shows.length} total, history hidden).</p>
-      <ErrorBanner message={error} />
+      <div className="toolbar">
+        <input className="search" placeholder="Search location or date…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <span className="muted small">{filtered.length} upcoming show{filtered.length !== 1 ? "s" : ""}</span>
+        <button className="button" onClick={() => openPanel({ kind: "addShow" })}>+ Add show</button>
+      </div>
+      {error && <p className="error">{error}</p>}
       <table className="data-table">
         <thead>
-          <tr><th>ID</th><th>Facility</th><th>Date</th><th>Time</th><th>Duration</th><th colSpan={2}></th></tr>
+          <tr>
+            {header("date", "Date")}{header("start_time", "Time")}{header("facility_name", "Location")}
+            {header("status", "Status")}{header("musician_count", "Musicians")}{header("backup_count", "Backups")}<th />
+          </tr>
         </thead>
         <tbody>
-          {upcoming.map((s) => (
+          {sorted.map((s) => (
             <tr key={s.show_id}>
-              <td>{s.show_id}</td>
-              <td>{s.facility_id}</td>
-              <td>{s.date}</td>
+              <td><button className="person-name" onClick={() => openPanel({ kind: "show", id: s.show_id })}>{formatDate(s.date)}</button></td>
               <td>{s.start_time}</td>
-              <td>{s.duration_min} min</td>
-              <td><button className="link-button" onClick={() => startEdit(s)}>Edit</button></td>
-              <td><button className="link-button danger" onClick={() => deleteShow(s.show_id)}>Delete</button></td>
+              <td>{s.facility_name}</td>
+              <td><StatusBadge status={s.status} /></td>
+              <td>{s.musician_count} / {s.target_musicians}</td>
+              <td>{s.backup_count}</td>
+              <td className="icon-actions">
+                <button title="Edit details" onClick={() => openPanel({ kind: "editShow", id: s.show_id })}>✎</button>
+                <button title="Remove show" className="danger" onClick={() => remove(s)}>✕</button>
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
-
-      <h3>{editingId ? `Edit ${editingId}` : "Add a show"}</h3>
-      <div className="add-form">
-        <input placeholder="ID (e.g. S9999)" value={form.show_id} disabled={!!editingId}
-               onChange={(e) => setForm({ ...form, show_id: e.target.value })} />
-        <select value={form.facility_id} onChange={(e) => setForm({ ...form, facility_id: e.target.value })}>
-          {facilities.map((f) => <option key={f.facility_id} value={f.facility_id}>{f.facility_id}</option>)}
-        </select>
-        <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-        <input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
-        <input type="number" placeholder="Duration (min)" value={form.duration_min}
-               onChange={(e) => setForm({ ...form, duration_min: Number(e.target.value) })} />
-        <button onClick={submitShow}>{editingId ? "Save changes" : "Add show"}</button>
-        {editingId && <button className="secondary" onClick={cancelEdit}>Cancel</button>}
-      </div>
     </section>
   );
 }
 
 export default function WorkingTools() {
+  const [tab, setTab] = useState<Tab>("musicians");
   return (
     <div>
-      <h1>Working tools</h1>
-      <p className="subtitle">Add, edit, or remove musicians and shows. Changes here affect the next solve.</p>
-      <MusiciansSection />
-      <hr />
-      <ShowsSection />
+      <h1>Roster</h1>
+      <p className="subtitle">Musicians, who's usually free when, and upcoming shows. Changes mark the draft as out of date until you re-solve it.</p>
+      <div className="tabs" role="tablist">
+        {([["musicians", "Musicians"], ["availability", "Availability"], ["shows", "Shows"]] as const).map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "musicians" && <MusiciansTab />}
+      {tab === "availability" && <AvailabilityTab />}
+      {tab === "shows" && <ShowsTab />}
     </div>
   );
 }

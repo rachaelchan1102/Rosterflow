@@ -1,18 +1,27 @@
 :root {
-  --surface: #fcfcfb;
-  --page: #f9f9f7;
+  --page: #f7f6f3;
+  --surface: #ffffff;
   --card: #f0efec;
-  --text-primary: #0b0b0b;
+  --text-primary: #111110;
   --text-secondary: #52514e;
   --text-muted: #898781;
-  --border: #e1e0d9;
-  --good: #0ca30c;
-  --warning: #fab219;
-  --critical: #d03b3b;
+  --border: #e3e1da;
+  --accent: #2a78d6;
+  --accent-soft: #e6f0fb;
 
-  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* One status language, used identically on every screen (calendar chip, KPI tile, badge, callout). */
+  --green: #0c8a0c;
+  --green-soft: #e7f5e7;
+  --amber: #b37a00;
+  --amber-mark: #fab219;
+  --amber-soft: #fef4d8;
+  --red: #c93434;
+  --red-soft: #fbe6e6;
+
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   color: var(--text-primary);
   background: var(--page);
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -21,4 +30,10 @@
 
 body {
   margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
 }

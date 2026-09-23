@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
-import { API_BASE } from "./api";
+import { api } from "../api";
+import { useApp } from "../AppState";
+import type { MusicianProfile } from "../types";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const START_HOUR = 9;
@@ -52,19 +54,21 @@ function toWindows(grid: boolean[][]): Window[] {
   return windows;
 }
 
-export default function AvailabilityGrid({ musicianId, onClose }: { musicianId: string; onClose: () => void }) {
+export default function AvailabilityGrid({ musicianId }: { musicianId: string }) {
+  const { refresh, backPanel, showToast } = useApp();
   const [grid, setGrid] = useState<boolean[][] | null>(null);
   const [painting, setPainting] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [name, setName] = useState("");
+
   useEffect(() => {
-    fetch(`${API_BASE}/api/musicians/${musicianId}/availability`)
-      .then((res) => res.json())
-      .then((windows: Window[]) => setGrid(toGrid(windows)));
+    api<Window[]>(`/api/musicians/${musicianId}/availability`).then((windows) => setGrid(toGrid(windows)));
+    api<MusicianProfile>(`/api/musicians/${musicianId}/profile`).then((p) => setName(p.name)).catch(() => {});
   }, [musicianId]);
 
-  if (!grid) return <p className="loading">Loading availability…</p>;
+  if (!grid) return <p className="muted">Loading availability…</p>;
 
   const setCell = (day: number, hour: number, value: boolean) => {
     setGrid((prev) => {
@@ -86,22 +90,18 @@ export default function AvailabilityGrid({ musicianId, onClose }: { musicianId: 
   const save = () => {
     setSaving(true);
     setError(null);
-    fetch(`${API_BASE}/api/musicians/${musicianId}/availability`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(toWindows(grid)),
-    })
-      .then((res) => {
-        if (!res.ok) return res.json().then((e) => Promise.reject(new Error(e.detail)));
-        onClose();
-      })
+    api(`/api/musicians/${musicianId}/availability`, { method: "PUT", body: toWindows(grid) })
+      .then(() => { showToast("Availability saved"); refresh(); backPanel(); })
       .catch((e) => setError(e.message))
       .finally(() => setSaving(false));
   };
 
   return (
-    <div className="availability-panel" onMouseUp={() => setPainting(null)}>
-      <p className="hint">Click a cell to toggle it, or click and drag to paint several at once. Click a day's name to fill/clear the whole day.</p>
+    <div className="panel-body" onMouseUp={() => setPainting(null)} onMouseLeave={() => setPainting(null)}>
+      <div className="panel-title">
+        <h2>Weekly availability{name ? ` · ${name}` : ""}</h2>
+        <p className="muted small">Click a cell to toggle it, or click and drag to paint several at once. Click a day's name to fill or clear the whole day.</p>
+      </div>
       {error && <p className="error">{error}</p>}
       <div className="availability-grid" style={{ gridTemplateColumns: `60px repeat(${HOURS.length}, 1fr)` }}>
         <div />
@@ -123,9 +123,9 @@ export default function AvailabilityGrid({ musicianId, onClose }: { musicianId: 
           </Fragment>
         ))}
       </div>
-      <div className="availability-actions">
-        <button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save availability"}</button>
-        <button className="secondary" onClick={onClose}>Cancel</button>
+      <div className="panel-footer">
+        <button className="button" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save availability"}</button>
+        <button className="button secondary" onClick={backPanel}>Cancel</button>
       </div>
     </div>
   );

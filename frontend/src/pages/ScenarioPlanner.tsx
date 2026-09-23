@@ -1,240 +1,191 @@
 import { useEffect, useState } from "react";
-import { API_BASE } from "../api";
+import { api } from "../api";
+import FeasibilityCheck from "../components/FeasibilityCheck";
+import type { Facility, Kpis } from "../types";
 
-interface Kpis {
-  fill_rate: number;
-  backup_coverage: number;
-  capacity_utilization_mean: number;
-  capacity_utilization_spread: number;
-  total_cars: number;
-  total_car_km: number;
-  car_km_savings: number;
-  rotation_repeat_rate: number;
-}
+// The scenario endpoint adds the simulated music shortfall to the usual KPIs.
+type ScenarioKpis = Kpis & { minutes_short: number };
 
 interface ScenarioResponse {
-  baseline: Kpis;
-  scenario: Kpis;
+  baseline: ScenarioKpis;
+  scenario: ScenarioKpis;
+  show_count: number;
 }
 
-interface Facility {
-  facility_id: string;
-  display_name: string;
-}
-
-interface Feasibility {
-  date: string;
-  probability_fully_staffed: number;
-  eligible_pool_size: number;
-  excluded_day_conflict: number;
-  excluded_over_cap: number;
-  excluded_guardian_range: number;
-  mean_available_count: number;
-  mean_available_songs: number;
-}
-
-interface FeasibilityResponse {
-  requested: Feasibility;
-  alternatives: Feasibility[];
-}
-
-const ROWS: { key: keyof Kpis; label: string; format: (v: number) => string }[] = [
-  { key: "fill_rate", label: "Fill rate (simulated)", format: (v) => `${Math.round(v * 100)}%` },
-  { key: "backup_coverage", label: "Backup coverage", format: (v) => `${Math.round(v * 100)}%` },
-  { key: "capacity_utilization_mean", label: "Capacity utilization", format: (v) => `${Math.round(v * 100)}%` },
-  { key: "capacity_utilization_spread", label: "Utilization spread", format: (v) => `±${Math.round(v * 100)}%` },
-  { key: "total_cars", label: "Cars used", format: (v) => String(v) },
-  { key: "total_car_km", label: "Total car-km", format: (v) => `${v.toFixed(0)} km` },
-  { key: "car_km_savings", label: "Carpool savings", format: (v) => `${v.toFixed(0)} km` },
-  { key: "rotation_repeat_rate", label: "Rotation repeats", format: (v) => `${Math.round(v * 100)}%` },
+// SPEC: about 1 cancellation per show is normal, i.e. roughly 1 in 8 musicians.
+const RATE_STOPS = [
+  { label: "Normal", sub: "~1 per show", phrase: "the normal cancellation rate", value: 0.125 },
+  { label: "2×", sub: "~2 per show", phrase: "twice the normal cancellations", value: 0.25 },
+  { label: "3×", sub: "~3 per show", phrase: "three times the normal cancellations", value: 0.375 },
 ];
 
-function pct(x: number): string {
-  return `${Math.round(x * 100)}%`;
+type Row = { key: keyof ScenarioKpis; label: string; format: (v: number) => string; higherIsBetter: boolean; unit?: string };
+const ROWS: Row[] = [
+  { key: "fill_rate", label: "Shows with a full set", format: (v) => `${Math.round(v * 100)}%`, higherIsBetter: true },
+  { key: "minutes_short", label: "Music missing, all shows", format: (v) => `~${Math.round(v)} min`, higherIsBetter: false, unit: "min" },
+  { key: "backup_coverage", label: "Backup coverage", format: (v) => `${Math.round(v * 100)}%`, higherIsBetter: true },
+  { key: "capacity_utilization_mean", label: "Capacity used", format: (v) => `${Math.round(v * 100)}%`, higherIsBetter: false },
+  { key: "capacity_utilization_spread", label: "Workload spread", format: (v) => `±${Math.round(v * 100)}%`, higherIsBetter: false },
+  { key: "total_car_km", label: "Total car-km", format: (v) => `${v.toFixed(0)} km`, higherIsBetter: false },
+  { key: "rotation_repeat_rate", label: "Repeat visits", format: (v) => `${Math.round(v * 100)}%`, higherIsBetter: false },
+];
+
+function DeltaCell({ row, base, next }: { row: Row; base: number; next: number }) {
+  const diff = next - base;
+  if (Math.abs(diff) < 1e-9) return <td className="muted">—</td>;
+  const better = row.higherIsBetter ? diff > 0 : diff < 0;
+  const unit = row.key === "total_car_km" ? "km" : row.unit;
+  const shown = unit ? `${diff > 0 ? "+" : ""}${diff.toFixed(0)} ${unit}`
+    : `${diff > 0 ? "+" : ""}${Math.round(diff * 100)} pts`;
+  return <td className={better ? "delta-good" : "delta-bad"}>{better ? "▲" : "▼"} {shown}</td>;
 }
 
-export default function ScenarioPlanner() {
-  const [cancellationPct, setCancellationPct] = useState(12.5);
-  const [removeMusicians, setRemoveMusicians] = useState(0);
-  const [result, setResult] = useState<ScenarioResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [facilities, setFacilities] = useState<Facility[]>([]);
-  const [newShowFacility, setNewShowFacility] = useState("");
-  const [newShowDate, setNewShowDate] = useState("");
-  const [feasibility, setFeasibility] = useState<FeasibilityResponse | null>(null);
-  const [feasibilityLoading, setFeasibilityLoading] = useState(false);
-  const [feasibilityError, setFeasibilityError] = useState<string | null>(null);
+function NewShowCheck() {
+  const [locations, setLocations] = useState<Facility[]>([]);
+  const [slot, setSlot] = useState({ facilityId: "", date: "", startTime: "14:00", durationMin: 60 });
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/facilities`).then((res) => res.json()).then((f: Facility[]) => {
-      setFacilities(f);
-      if (f.length) setNewShowFacility(f[0].facility_id);
+    api<Facility[]>("/api/facilities").then((f) => {
+      setLocations(f);
+      if (f.length) {
+        setSlot((s) => ({ ...s, facilityId: f[0].facility_id, durationMin: f[0].show_duration_min,
+                          startTime: f[0].preferred_slot.split(" ")[1] ?? s.startTime }));
+      }
     });
   }, []);
 
-  const runScenario = () => {
+  const pickLocation = (id: string) => {
+    const f = locations.find((x) => x.facility_id === id);
+    setSlot({ ...slot, facilityId: id, durationMin: f?.show_duration_min ?? slot.durationMin });
+  };
+
+  return (
+    <section className="new-show-check">
+      <h2>Would an extra show work?</h2>
+      <p className="subtitle">
+        A location asks for a show on a certain day and time. See how likely it is you could staff it before saying yes —
+        given who's already booked, who's at their monthly cap, and who's usually free at that time.
+      </p>
+      <div className="scenario-layout">
+        <div className="scenario-controls">
+          <label>Location
+            <select value={slot.facilityId} onChange={(e) => pickLocation(e.target.value)}>
+              {locations.map((f) => <option key={f.facility_id} value={f.facility_id}>{f.display_name} ({f.region})</option>)}
+            </select>
+          </label>
+          <label>Date
+            <input type="date" value={slot.date} onChange={(e) => setSlot({ ...slot, date: e.target.value })} />
+          </label>
+          <div className="form-row">
+            <label>Start time
+              <input type="time" value={slot.startTime} onChange={(e) => setSlot({ ...slot, startTime: e.target.value })} />
+            </label>
+            <label>Length
+              <select value={slot.durationMin} onChange={(e) => setSlot({ ...slot, durationMin: Number(e.target.value) })}>
+                <option value={45}>45 min</option>
+                <option value={60}>60 min</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div className="scenario-results">
+          {slot.date ? (
+            <FeasibilityCheck facilityId={slot.facilityId} date={slot.date} startTime={slot.startTime}
+                              durationMin={slot.durationMin} onPickDate={(date) => setSlot({ ...slot, date })} />
+          ) : (
+            <p className="muted">Pick a date to check it.</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export default function ScenarioPlanner() {
+  const [rate, setRate] = useState(0.25);
+  const [removeMusicians, setRemoveMusicians] = useState(0);
+  const [result, setResult] = useState<ScenarioResponse | null>(null);
+  const [ranWith, setRanWith] = useState<{ rate: number; removed: number } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = () => {
     setLoading(true);
     setError(null);
-    fetch(`${API_BASE}/api/scenario`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cancellation_p: cancellationPct / 100, remove_musicians: removeMusicians }),
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(`API returned ${res.status}`);
-        return res.json();
-      })
-      .then(setResult)
-      .catch((err) => setError(String(err)))
+    api<ScenarioResponse>("/api/scenario", { method: "POST", body: { cancellation_p: rate, remove_musicians: removeMusicians } })
+      .then((r) => { setResult(r); setRanWith({ rate, removed: removeMusicians }); })
+      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
 
-  const checkFeasibility = () => {
-    if (!newShowDate) {
-      setFeasibilityError("Pick a date first.");
-      return;
-    }
-    setFeasibilityLoading(true);
-    setFeasibilityError(null);
-    fetch(`${API_BASE}/api/feasibility`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ facility_id: newShowFacility, date: newShowDate }),
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(`API returned ${res.status}`);
-        return res.json();
-      })
-      .then(setFeasibility)
-      .catch((err) => setFeasibilityError(String(err)))
-      .finally(() => setFeasibilityLoading(false));
-  };
+  const full = result ? { base: result.baseline.fill_rate, next: result.scenario.fill_rate } : null;
+  const missing = Math.round(result?.scenario.minutes_short ?? 0);
+  const stop = RATE_STOPS.find((s) => s.value === ranWith?.rate);
 
   return (
     <div>
       <h1>Scenario planner</h1>
-      <p className="subtitle">What-if this month looked different — re-runs the schedule and compares it to today's plan.</p>
+      <p className="subtitle">What if the coming weeks go worse than usual? Compare against the current draft, side by side.</p>
 
-      <div className="scenario-controls">
-        <label>
-          Cancellation rate: <strong>{cancellationPct.toFixed(1)}%</strong> per musician per show
-          <br />
-          <span className="hint">1 cancellation per show is normal ≈ 12.5%</span>
-          <input
-            type="range"
-            min={5}
-            max={50}
-            step={2.5}
-            value={cancellationPct}
-            onChange={(e) => setCancellationPct(Number(e.target.value))}
-          />
-        </label>
-
-        <label>
-          Musicians removed: <strong>{removeMusicians}</strong>
-          <br />
-          <span className="hint">Simulates losing volunteers — triggers a full re-solve</span>
-          <input
-            type="range"
-            min={0}
-            max={30}
-            step={1}
-            value={removeMusicians}
-            onChange={(e) => setRemoveMusicians(Number(e.target.value))}
-          />
-        </label>
-
-        <button onClick={runScenario} disabled={loading}>
-          {loading ? "Running…" : "Run scenario"}
-        </button>
-      </div>
-
-      {error && <p className="error">Couldn't run that scenario: {error}</p>}
-
-      {result && (
-        <table className="comparison-table">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Today's plan</th>
-              <th>This scenario</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ROWS.map((row) => (
-              <tr key={row.key}>
-                <td>{row.label}</td>
-                <td>{row.format(result.baseline[row.key])}</td>
-                <td>{row.format(result.scenario[row.key])}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <hr />
-
-      <h2>Will a new show fit?</h2>
-      <p className="subtitle">
-        Before promising a care home a date — how likely is it we could actually staff it, given what's already committed?
-      </p>
-
-      <div className="scenario-controls">
-        <label>
-          Facility
-          <select value={newShowFacility} onChange={(e) => setNewShowFacility(e.target.value)}>
-            {facilities.map((f) => <option key={f.facility_id} value={f.facility_id}>{f.facility_id}</option>)}
-          </select>
-        </label>
-        <label>
-          Requested date
-          <input type="date" value={newShowDate} onChange={(e) => setNewShowDate(e.target.value)} />
-        </label>
-        <button onClick={checkFeasibility} disabled={feasibilityLoading}>
-          {feasibilityLoading ? "Checking…" : "Check feasibility"}
-        </button>
-      </div>
-
-      {feasibilityError && <p className="error">{feasibilityError}</p>}
-
-      {feasibility && (
-        <div className="feasibility-result">
-          <div className="stat-tile feasibility-headline">
-            <div className="stat-label">Chance {feasibility.requested.date} can be fully staffed</div>
-            <div className="stat-value">{pct(feasibility.requested.probability_fully_staffed)}</div>
+      <div className="scenario-layout">
+        <div className="scenario-controls">
+          <div className="control">
+            <span className="control-label">Cancellations</span>
+            <div className="segmented">
+              {RATE_STOPS.map((s) => (
+                <button key={s.value} className={rate === s.value ? "active" : ""} onClick={() => setRate(s.value)}>
+                  <strong>{s.label}</strong><span>{s.sub}</span>
+                </button>
+              ))}
+            </div>
           </div>
-          <p className="hint">
-            {feasibility.requested.eligible_pool_size} musicians eligible
-            ({feasibility.requested.excluded_day_conflict} already booked that day,{" "}
-            {feasibility.requested.excluded_over_cap} at their monthly cap,{" "}
-            {feasibility.requested.excluded_guardian_range} outside the guardian-distance limit) —
-            averaging {feasibility.requested.mean_available_count.toFixed(1)} musicians and{" "}
-            {feasibility.requested.mean_available_songs.toFixed(0)} songs available across simulated runs.
-          </p>
 
-          {feasibility.alternatives.length > 0 && (
+          <div className="control">
+            <span className="control-label">Musicians lost: <strong>{removeMusicians}</strong></span>
+            <input type="range" min={0} max={30} step={1} value={removeMusicians}
+                   onChange={(e) => setRemoveMusicians(Number(e.target.value))} />
+            <span className="small muted">Takes the schedule apart and re-solves it without them (~20s).</span>
+          </div>
+
+          <button className="button" onClick={run} disabled={loading}>{loading ? "Running…" : "Run scenario"}</button>
+          {error && <p className="error">{error}</p>}
+        </div>
+
+        <div className="scenario-results">
+          {!result && <p className="muted">Pick a scenario and run it — results show up here next to the current schedule's numbers.</p>}
+          {result && full && ranWith && (
             <>
-              <h3>Nearby dates ranked by feasibility</h3>
+              <p className="scenario-summary">
+                At <strong>{stop?.phrase ?? `a ${Math.round(ranWith.rate * 100)}% cancellation rate`}</strong>
+                {ranWith.removed > 0 && <> with <strong>{ranWith.removed} fewer musicians</strong></>}, about{" "}
+                <strong>{Math.round(full.next * 100)}%</strong> of shows would still have a full set after backups
+                (vs {Math.round(full.base * 100)}% at the normal rate). Every show still goes ahead — the rest just run
+                short, about <strong>{missing} minutes of music</strong> missing across all {result.show_count} shows.
+              </p>
               <table className="comparison-table">
-                <thead>
-                  <tr><th>Date</th><th>Chance fully staffed</th><th>Eligible pool</th></tr>
-                </thead>
+                <thead><tr><th /><th>Current schedule (normal rate)</th><th>Scenario</th><th>Change</th></tr></thead>
                 <tbody>
-                  {feasibility.alternatives.map((a) => (
-                    <tr key={a.date} className={a.date === feasibility.requested.date ? "current-row" : ""}>
-                      <td>{a.date}{a.date === feasibility.requested.date ? " (requested)" : ""}</td>
-                      <td>{pct(a.probability_fully_staffed)}</td>
-                      <td>{a.eligible_pool_size}</td>
+                  {ROWS.map((row) => (
+                    <tr key={row.key}>
+                      <td>{row.label}</td>
+                      <td>{row.format(result.baseline[row.key])}</td>
+                      <td><strong>{row.format(result.scenario[row.key])}</strong></td>
+                      <DeltaCell row={row} base={result.baseline[row.key]} next={result.scenario[row.key]} />
                     </tr>
                   ))}
                 </tbody>
               </table>
+              <p className="small muted">
+                "Full set" and "music missing" are simulated: 3,000 random months where every musician has the same
+                chance of dropping out, backups are called in rank order, and the rest of the roster picks up extra songs
+                where they can. A full set also needs the minimum number of musicians and a pianist.
+              </p>
             </>
           )}
         </div>
-      )}
+      </div>
+      <hr />
+      <NewShowCheck />
     </div>
   );
 }
