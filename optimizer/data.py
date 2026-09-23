@@ -51,6 +51,46 @@ def load_from_csv(csv_dir: str | Path) -> "Data":
     return _build_data(raw)
 
 
+def load_from_db(dsn: str) -> "Data":
+    """The real deployment's loader — same validation, same Data shape as load_from_csv, just a
+    different source. psycopg is imported here, not at module level, so a CSV-only environment
+    (tests, the playground) never needs a Postgres driver installed to import this module at all.
+    """
+    import psycopg
+
+    raw = {}
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        for table in REQUIRED_COLUMNS:
+            cur.execute(f"SELECT * FROM {table}")
+            cols = [c.name for c in cur.description]
+            raw[table] = pd.DataFrame(cur.fetchall(), columns=cols)
+    raw["availability"]["available"] = raw["availability"]["available"].astype(int)
+
+    problems = _validate(raw)
+    if problems:
+        raise DataValidationError("\n".join(problems))
+    return _build_data(raw)
+
+
+def save_to_db(data: "Data", dsn: str) -> None:
+    """Full resync: replace every table's contents with what's currently in `data`. Simple and
+    correct at this dataset's scale (tens of musicians, ~100 shows) — not something to run on a
+    hot path, just once after a validated CRUD change (add/update/delete_musician or _show)."""
+    import psycopg
+
+    raw = _to_raw_tables(data)
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        for table, df in raw.items():
+            cur.execute(f"TRUNCATE {table} CASCADE")
+            if df.empty:
+                continue
+            cols = list(df.columns)
+            placeholders = ", ".join(["%s"] * len(cols))
+            cur.executemany(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})",
+                           df[cols].itertuples(index=False, name=None))
+        conn.commit()
+
+
 def _build_data(raw: dict[str, pd.DataFrame]) -> "Data":
     """Assumes `raw` has already passed _validate. Fills in any missing distance pairs (the
     haversine fallback — real OSRM lookups are a caller's job, see distances.py) and wraps

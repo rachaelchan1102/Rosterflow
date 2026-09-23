@@ -3,3 +3,4 @@ numpy
 ortools
 pytest
 requests
+psycopg[binary]
