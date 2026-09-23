@@ -4,3 +4,5 @@ ortools
 pytest
 requests
 psycopg[binary]
+fastapi
+uvicorn
