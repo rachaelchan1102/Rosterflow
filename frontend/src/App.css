@@ -93,3 +93,86 @@ hr {
 .success {
   color: var(--good);
 }
+
+.top-nav {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.top-nav a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+
+.top-nav a.active {
+  color: var(--text-primary);
+}
+
+.scenario-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 480px;
+  margin: 24px 0;
+}
+
+.scenario-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.95rem;
+}
+
+.scenario-controls .hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.scenario-controls input[type="range"] {
+  margin-top: 8px;
+  accent-color: #2a78d6;
+}
+
+.scenario-controls button {
+  align-self: flex-start;
+  background: #2a78d6;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.scenario-controls button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 24px;
+}
+
+.comparison-table th,
+.comparison-table td {
+  text-align: left;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.comparison-table th {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.comparison-table td:not(:first-child) {
+  font-weight: 600;
+}
