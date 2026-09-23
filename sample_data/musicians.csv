@@ -1,0 +1,61 @@
+musician_id,display_name,age,instrument,home_region,home_lat,home_lng,transport,can_drive,years_with_org,max_shows_per_month,min_songs,typical_songs,max_songs
+M01,Musician 1,15,piano,Vaughan,43.8389,-79.4746,guardian,False,0.4,4,1,3,6
+M02,Musician 2,20,piano,North York,43.7455,-79.3674,transit,False,1.3,4,1,2,3
+M03,Musician 3,22,piano,Markham,43.8569,-79.3308,transit,False,0.2,3,1,2,2
+M04,Musician 4,17,piano,Richmond Hill,43.9274,-79.4352,transit,False,1.3,4,1,3,3
+M05,Musician 5,14,cello,Etobicoke,43.6721,-79.5114,guardian,False,1.0,4,1,3,5
+M06,Musician 6,15,guitar,Toronto-Downtown,43.6845,-79.3836,guardian,False,2.4,4,1,2,4
+M07,Musician 7,20,piano,North York,43.7421,-79.3971,transit,False,0.6,1,1,3,5
+M08,Musician 8,20,piano,North York,43.7729,-79.451,car,True,2.3,2,1,2,5
+M09,Musician 9,19,cello,Mississauga,43.6083,-79.6665,car,True,3.7,2,1,3,3
+M10,Musician 10,15,piano,Toronto-Downtown,43.6608,-79.3533,guardian,False,3.7,1,1,3,5
+M11,Musician 11,18,piano,Scarborough,43.7735,-79.2817,car,True,3.9,3,1,3,4
+M12,Musician 12,18,piano,Pickering,43.7961,-79.1077,car,True,3.3,4,1,3,5
+M13,Musician 13,18,piano,Toronto-Downtown,43.6467,-79.4012,transit,False,1.7,2,1,3,5
+M14,Musician 14,21,piano,Toronto-Downtown,43.6148,-79.4093,car,True,3.0,4,1,3,4
+M15,Musician 15,18,guitar,North York,43.7366,-79.4174,car,True,1.2,2,1,2,5
+M16,Musician 16,20,piano,Pickering,43.8287,-79.094,car,True,0.2,2,1,2,4
+M17,Musician 17,18,piano,Toronto-Downtown,43.6594,-79.3597,car,True,2.0,4,1,3,4
+M18,Musician 18,19,piano,Pickering,43.8371,-79.0272,car,True,0.2,2,1,2,5
+M19,Musician 19,20,piano,Scarborough,43.7478,-79.2362,car,True,0.4,4,1,3,6
+M20,Musician 20,12,piano,Richmond Hill,43.8659,-79.4321,guardian,False,3.1,2,1,3,5
+M21,Musician 21,16,violin,Mississauga,43.5931,-79.6106,guardian,False,1.5,3,1,3,4
+M22,Musician 22,16,piano,Toronto-Downtown,43.6149,-79.3734,guardian,False,1.5,2,1,2,4
+M23,Musician 23,15,piano,North York,43.7588,-79.4311,guardian,False,3.8,4,1,2,3
+M24,Musician 24,17,piano,Markham,43.8688,-79.2951,transit,False,2.1,3,1,2,2
+M25,Musician 25,23,piano,Markham,43.8798,-79.3536,transit,False,0.5,3,1,3,6
+M26,Musician 26,14,piano,Mississauga,43.6046,-79.6714,guardian,False,3.8,4,1,3,5
+M27,Musician 27,21,piano,Toronto-Downtown,43.6628,-79.394,transit,False,2.4,1,1,2,3
+M28,Musician 28,11,piano,North York,43.7831,-79.3978,guardian,False,2.1,4,1,2,3
+M29,Musician 29,16,piano,Etobicoke,43.6823,-79.5613,guardian,False,0.5,2,1,2,5
+M30,Musician 30,18,piano,Etobicoke,43.6669,-79.5314,transit,False,3.6,4,1,3,5
+M31,Musician 31,20,piano,Scarborough,43.7527,-79.263,car,True,3.7,3,1,3,3
+M32,Musician 32,20,piano,Toronto-Downtown,43.6351,-79.3964,transit,False,1.5,4,1,3,5
+M33,Musician 33,20,piano,Etobicoke,43.6668,-79.5089,transit,False,0.5,3,1,3,5
+M34,Musician 34,16,piano,Etobicoke,43.6762,-79.552,guardian,False,1.8,3,1,2,3
+M35,Musician 35,16,piano,Scarborough,43.7805,-79.2545,guardian,False,4.0,4,1,3,3
+M36,Musician 36,21,piano,Markham,43.874,-79.3272,car,True,0.1,2,1,3,5
+M37,Musician 37,17,guitar,Vaughan,43.8439,-79.4936,transit,False,0.1,1,1,2,4
+M38,Musician 38,13,piano,Markham,43.8341,-79.3596,guardian,False,0.2,4,1,3,4
+M39,Musician 39,13,piano,Brampton,43.7359,-79.7273,guardian,False,0.2,2,1,3,6
+M40,Musician 40,14,piano,Mississauga,43.6171,-79.6382,guardian,False,0.6,3,1,3,3
+M41,Musician 41,19,piano,Markham,43.8528,-79.3139,transit,False,0.2,3,1,3,5
+M42,Musician 42,18,cello,North York,43.7234,-79.3914,car,True,3.9,3,1,3,6
+M43,Musician 43,20,piano,North York,43.7562,-79.4034,car,True,1.2,3,1,2,5
+M44,Musician 44,16,piano,North York,43.7823,-79.4023,guardian,False,1.6,3,1,3,4
+M45,Musician 45,18,piano,Etobicoke,43.6514,-79.5168,car,True,2.4,3,1,3,4
+M46,Musician 46,20,piano,North York,43.7282,-79.4515,car,True,1.7,3,1,3,6
+M47,Musician 47,16,piano,Toronto-Downtown,43.6308,-79.373,guardian,False,2.6,3,1,3,5
+M48,Musician 48,19,guitar,North York,43.7813,-79.4328,transit,False,2.1,3,1,3,5
+M49,Musician 49,15,piano,Oakville,43.4674,-79.6817,guardian,False,3.2,2,1,3,5
+M50,Musician 50,16,piano,Scarborough,43.7822,-79.2467,guardian,False,0.2,2,1,3,6
+M51,Musician 51,16,piano,Markham,43.8538,-79.3113,guardian,False,0.1,4,1,2,4
+M52,Musician 52,13,piano,Oakville,43.4769,-79.7016,guardian,False,1.5,4,1,3,5
+M53,Musician 53,19,piano,Richmond Hill,43.893,-79.4568,transit,False,1.6,3,1,2,4
+M54,Musician 54,16,piano,Mississauga,43.5969,-79.6266,guardian,False,3.3,4,1,2,4
+M55,Musician 55,18,piano,North York,43.7422,-79.3833,car,True,1.6,1,1,3,4
+M56,Musician 56,19,piano,Toronto-Downtown,43.6813,-79.3872,car,True,0.2,2,1,3,3
+M57,Musician 57,19,guitar,Vaughan,43.8292,-79.487,car,True,1.0,4,1,2,2
+M58,Musician 58,20,piano,Etobicoke,43.6449,-79.5232,car,True,2.2,2,1,3,5
+M59,Musician 59,17,piano,Scarborough,43.7811,-79.2541,transit,False,3.6,3,1,3,5
+M60,Musician 60,16,piano,Oakville,43.4233,-79.6821,guardian,False,2.5,2,1,3,6
