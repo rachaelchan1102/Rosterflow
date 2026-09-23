@@ -65,6 +65,10 @@ def load_from_db(dsn: str) -> "Data":
             cols = [c.name for c in cur.description]
             raw[table] = pd.DataFrame(cur.fetchall(), columns=cols)
     raw["availability"]["available"] = raw["availability"]["available"].astype(int)
+    # Match the CSV path exactly: string dates (everything downstream compares date strings),
+    # and no database-only surrogate id (a new row has none, and save_to_db would insert NaN).
+    raw["shows"]["date"] = pd.to_datetime(raw["shows"]["date"]).dt.strftime("%Y-%m-%d")
+    raw["weekly_availability"] = raw["weekly_availability"].drop(columns=["id"], errors="ignore")
 
     problems = _validate(raw)
     if problems:
@@ -327,6 +331,21 @@ def delete_show(data: Data, show_id: str) -> Data:
     raw["shows"] = shows[shows.show_id != show_id]
     raw["availability"] = raw["availability"][raw["availability"].show_id != show_id]
     raw["history_assignments"] = raw["history_assignments"][raw["history_assignments"].show_id != show_id]
+    return _validate_and_build(raw)
+
+
+def set_show_availability(data: Data, musician_id: str, show_id: str, available: bool) -> Data:
+    """One musician's yes/no for one show — how a cancellation gets recorded, so a later
+    re-solve doesn't put the person who just dropped out straight back on the show."""
+    raw = _to_raw_tables(data)
+    av = raw["availability"]
+    mask = (av.musician_id == musician_id) & (av.show_id == show_id)
+    if mask.any():
+        av.loc[mask, "available"] = int(available)
+    else:
+        raw["availability"] = pd.concat(
+            [av, pd.DataFrame([dict(musician_id=musician_id, show_id=show_id, available=int(available))])],
+            ignore_index=True)
     return _validate_and_build(raw)
 
 

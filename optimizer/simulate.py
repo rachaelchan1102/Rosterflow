@@ -84,11 +84,15 @@ def _build_show_sim_data(data: Data, assignments: pd.DataFrame, backups: pd.Data
     )
 
 
-def _simulate_show(sim: _ShowSimData, cancellation_p: float, n_runs: int, rng: np.random.Generator) -> float:
-    """Vectorized across all n_runs for this one show — no pandas, no per-run Python loop."""
+def _simulate_show(sim: _ShowSimData, cancellation_p: float, n_runs: int,
+                   rng: np.random.Generator) -> tuple[float, float]:
+    """Vectorized across all n_runs for this one show — no pandas, no per-run Python loop.
+    Returns (share of runs fully staffed, average songs the set comes up short). A show that
+    isn't fully staffed still goes ahead — it just runs short — so the second number is the
+    real cost of a bad month."""
     n_roster = len(sim.roster_songs)
     if n_roster == 0:
-        return 0.0
+        return 0.0, float(sim.songs_target)
 
     cancel = rng.random((n_runs, n_roster)) < cancellation_p    # shape (n_runs, n_roster)
     present = ~cancel
@@ -114,33 +118,41 @@ def _simulate_show(sim: _ShowSimData, cancellation_p: float, n_runs: int, rng: n
     covered_songs = covered_songs + np.minimum(gap, roster_room + backup_room)
 
     filled = (covered_songs >= sim.songs_target) & (covered_count >= sim.min_musicians) & pianist_covered
-    return float(filled.mean())
+    songs_short = np.maximum(sim.songs_target - covered_songs, 0)
+    return float(filled.mean()), float(songs_short.mean())
 
 
 def simulate_fill_rate(data: Data, assignments: pd.DataFrame, backups: pd.DataFrame,
                        show_ids: list[str] | None = None, cancellation_p: float = DEFAULT_CANCEL_P,
                        n_runs: int = DEFAULT_N_RUNS, seed: int | None = None) -> pd.DataFrame:
-    """One fill_rate per show, each estimated over n_runs independent Monte Carlo draws."""
+    """Per show, estimated over n_runs independent Monte Carlo draws: fill_rate (share of runs
+    fully staffed) and minutes_short (average minutes of music the set comes up short)."""
     ids = show_ids if show_ids is not None else list(assignments.show_id.unique())
     rng = np.random.default_rng(seed)
-    rows = [dict(show_id=show_id,
-                 fill_rate=_simulate_show(_build_show_sim_data(data, assignments, backups, show_id),
-                                          cancellation_p, n_runs, rng))
-            for show_id in ids]
-    return pd.DataFrame(rows, columns=["show_id", "fill_rate"])
+    rows = []
+    for show_id in ids:
+        fill, songs_short = _simulate_show(_build_show_sim_data(data, assignments, backups, show_id),
+                                           cancellation_p, n_runs, rng)
+        fac = data.facilities.loc[data.shows.at[show_id, "facility_id"]]
+        minutes_per_song = float(fac.show_duration_min) / float(fac.songs_per_show)
+        rows.append(dict(show_id=show_id, fill_rate=fill, minutes_short=songs_short * minutes_per_song))
+    return pd.DataFrame(rows, columns=["show_id", "fill_rate", "minutes_short"])
 
 
 @dataclass
 class NewShowFeasibility:
     """Answers a DIFFERENT question from everything else in this module: not "will an already-
-    confirmed show survive cancellations" but "if a care home asks for this date, is it likely
+    confirmed show stay fully staffed through cancellations" but "if a care home asks for this date, is it likely
     we could staff it at all" — before any musician has been asked about that specific date."""
     date: str
     probability_fully_staffed: float
     eligible_pool_size: int
+    # Exclusion counts don't overlap — each person is counted under the first reason that applies,
+    # in this order — so eligible_pool_size + all four always equals the roster size.
     excluded_day_conflict: int    # already committed to another show that exact date
     excluded_over_cap: int        # already at their monthly cap for that month
     excluded_guardian_range: int  # under-17s outside the guardian-distance limit for this facility
+    excluded_time: int            # usual weekly pattern doesn't cover this time slot (0 if no time given)
     mean_available_count: float
     mean_available_songs: float
 
@@ -168,8 +180,21 @@ def _empirical_weekday_availability_rates(data: Data, weekday: int) -> dict[str,
     return rates
 
 
+WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _not_free_at(data: Data, weekday: int, start_time: str, duration_min: int) -> set[str]:
+    """Musicians whose usual weekly pattern has no window covering this whole time slot."""
+    end = (pd.Timestamp(f"2000-01-01 {start_time}") + pd.Timedelta(minutes=duration_min)).strftime("%H:%M")
+    wa = data.weekly_availability
+    wa = wa[wa.weekday == WEEKDAY_NAMES[weekday]]
+    covered = set(wa[(wa.start_time <= start_time) & (wa.end_time >= end)].musician_id)
+    return set(data.musicians.index) - covered
+
+
 def estimate_new_show_feasibility(data: Data, assignments: pd.DataFrame, facility_id: str, date: str,
-                                  n_runs: int = DEFAULT_N_RUNS, seed: int | None = None) -> NewShowFeasibility:
+                                  n_runs: int = DEFAULT_N_RUNS, seed: int | None = None,
+                                  start_time: str | None = None, duration_min: int | None = None) -> NewShowFeasibility:
     """"If a care home asks for `date` at `facility_id`, how likely is it we could staff it?" —
     used BEFORE the date is confirmed and BEFORE musicians have been asked about it, so there's
     no confirmed availability.csv row to read yet. Uses each eligible musician's empirical
@@ -177,7 +202,9 @@ def estimate_new_show_feasibility(data: Data, assignments: pd.DataFrame, facilit
 
     Hard exclusions come from the schedule that's already confirmed (`assignments`), not from
     randomness: a day conflict or a maxed-out monthly cap makes someone unavailable for real,
-    regardless of what their historical pattern says.
+    regardless of what their historical pattern says. With a `start_time`, anyone whose usual
+    weekly pattern doesn't cover that slot is excluded too (someone only free mornings can't
+    take an evening show, however often they say yes to that weekday).
     """
     fac = data.facilities.loc[facility_id]
     weekday = pd.Timestamp(date).weekday()
@@ -199,7 +226,10 @@ def estimate_new_show_feasibility(data: Data, assignments: pd.DataFrame, facilit
         if not data.within_guardian_range(m.musician_id, facility_id)
     }
 
-    excluded = day_conflict_ids | over_cap_ids | guardian_ineligible_ids
+    time_ineligible_ids = (_not_free_at(data, weekday, start_time, duration_min or int(fac.show_duration_min))
+                           if start_time else set())
+
+    excluded = day_conflict_ids | over_cap_ids | guardian_ineligible_ids | time_ineligible_ids
     eligible = [m for m in data.musicians.itertuples() if m.musician_id not in excluded]
 
     rates_by_id = _empirical_weekday_availability_rates(data, weekday)
@@ -223,17 +253,24 @@ def estimate_new_show_feasibility(data: Data, assignments: pd.DataFrame, facilit
         mean_count = float(available_count.mean())
         mean_songs = float(available_songs.mean())
 
+    # Each person is counted under the first rule that rules them out, so the counts plus the
+    # eligible pool add up to the whole roster instead of double-counting overlaps.
+    over_cap_only = over_cap_ids - day_conflict_ids
+    guardian_only = guardian_ineligible_ids - day_conflict_ids - over_cap_ids
+    time_only = time_ineligible_ids - day_conflict_ids - over_cap_ids - guardian_ineligible_ids
     return NewShowFeasibility(
         date=date, probability_fully_staffed=probability, eligible_pool_size=len(eligible),
         excluded_day_conflict=len(day_conflict_ids),
-        excluded_over_cap=len(over_cap_ids), excluded_guardian_range=len(guardian_ineligible_ids),
+        excluded_over_cap=len(over_cap_only), excluded_guardian_range=len(guardian_only),
+        excluded_time=len(time_only),
         mean_available_count=mean_count, mean_available_songs=mean_songs,
     )
 
 
 def suggest_alternative_dates(data: Data, assignments: pd.DataFrame, facility_id: str, requested_date: str,
                               window_days: int = 14, n_runs: int = 2000, top_n: int = 3,
-                              seed: int | None = None) -> list[NewShowFeasibility]:
+                              seed: int | None = None, start_time: str | None = None,
+                              duration_min: int | None = None) -> list[NewShowFeasibility]:
     """If a care home's requested date looks weak, check nearby dates too (+/- window_days) and
     rank by feasibility. A date already at the org-wide MAX_SHOWS_PER_DAY cap (see data.py) is
     skipped outright, not just deprioritized — adding a 4th show there wouldn't be a valid
@@ -247,7 +284,8 @@ def suggest_alternative_dates(data: Data, assignments: pd.DataFrame, facility_id
         if (data.shows["date"] == candidate_date).sum() >= MAX_SHOWS_PER_DAY:
             continue
         feas = estimate_new_show_feasibility(data, assignments, facility_id, candidate_date,
-                                             n_runs=n_runs, seed=seed)
+                                             n_runs=n_runs, seed=seed, start_time=start_time,
+                                             duration_min=duration_min)
         results.append((abs(offset), feas))
 
     results.sort(key=lambda r: (-r[1].probability_fully_staffed, r[0]))
@@ -266,6 +304,6 @@ def backups_needed_for_target(data: Data, assignments: pd.DataFrame, show_id: st
     for n in range(0, max_backups + 1):
         backup_result = assign_backups(data, assignments, show_ids=[show_id], num_backups=n)
         sim = _build_show_sim_data(data, assignments, backup_result.backups, show_id)
-        if _simulate_show(sim, cancellation_p, n_runs, rng) >= target_fill_rate:
+        if _simulate_show(sim, cancellation_p, n_runs, rng)[0] >= target_fill_rate:
             return n
     return None

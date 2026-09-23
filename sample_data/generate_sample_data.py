@@ -55,7 +55,7 @@ for i, (r, wd) in enumerate(zip(FAC_REGIONS, weekday_assignment), 1):
     # target_musicians filled in below, once musician homes exist and we know how far this
     # facility actually is from the volunteer pool — a remote facility realistically draws fewer.
     time = str(rng.choice(WEEKDAY_TIME_OPTIONS[wd]))
-    fac.append(dict(facility_id=f"SH{i:02d}", display_name=f"SH {i}", region=r, lat=lat, lng=lng,
+    fac.append(dict(facility_id=f"LOC{i}", display_name=f"Location {i}", region=r, lat=lat, lng=lng,
                     show_duration_min=dur, songs_per_show=songs, base_target_musicians=base_target,
                     min_musicians=3, max_musicians=songs,      # everyone plays >=1 song -> can't exceed songs
                     has_piano_onsite=bool(rng.random() < 0.7),

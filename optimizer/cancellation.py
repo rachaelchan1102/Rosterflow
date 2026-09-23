@@ -35,7 +35,11 @@ class CancellationPlan:
     cancelled_musician_id: str
     activated_backup_id: str | None
     extra_song_requests: list[tuple[str, int]] = field(default_factory=list)   # (musician_id, extra songs)
+    # A suggestion only — NOT counted in the totals below, since the coordinator has to opt in.
     additional_backup_id: str | None = None
+    additional_backup_songs: int = 0
+    additional_backup_is_pianist: bool = False
+    # Totals after the backup (if any) and the extra-song requests — without the suggestion.
     songs_covered: int = 0
     songs_target: int = 0
     musician_count: int = 0
@@ -44,7 +48,11 @@ class CancellationPlan:
 
 
 def handle_cancellation(data: Data, assignments: pd.DataFrame, backups: pd.DataFrame,
-                        show_id: str, cancelled_musician_id: str) -> CancellationPlan:
+                        show_id: str, cancelled_musician_id: str,
+                        backup_choice: str = "auto") -> CancellationPlan:
+    """`backup_choice`: "auto" follows the ranked-backup rules below; "none" skips straight to
+    extra songs; any other value is the musician_id the coordinator picked themselves, which
+    must still be free that day (raises ValueError otherwise)."""
     s = data.shows.loc[show_id]
     fac = data.facilities.loc[s.facility_id]
     pianist_ids = set(data.musicians[data.musicians.instrument == "piano"].musician_id)
@@ -64,13 +72,30 @@ def handle_cancellation(data: Data, assignments: pd.DataFrame, backups: pd.DataF
     def eligible(musician_id: str) -> bool:
         return musician_id not in playing_today and data.is_available(musician_id, show_id)
 
-    activated = next((b.musician_id for b in ranked_backups.itertuples() if eligible(b.musician_id)), None)
+    if backup_choice == "none":
+        activated = None
+    elif backup_choice != "auto":
+        if backup_choice == cancelled_musician_id or backup_choice in set(roster.musician_id):
+            raise ValueError(f"{backup_choice} is already on this show")
+        if not eligible(backup_choice):
+            raise ValueError(f"{backup_choice} isn't free for this show")
+        activated = backup_choice
+    else:
+        # Prefer backups with room left under their monthly cap; only fall back to someone at
+        # their cap when nobody else on the list is free (the cap is a release valve, not a wall).
+        month = str(s.date)[:7]
+        this_month = set(data.shows.index[data.shows.date.astype(str).str.startswith(month)])
+        month_counts = assignments[assignments.show_id.isin(this_month)].groupby("musician_id").size()
 
-    if not still_has_pianist and activated is not None and activated not in pianist_ids:
-        pianist_backup = next((b.musician_id for b in ranked_backups.itertuples()
-                              if b.musician_id in pianist_ids and eligible(b.musician_id)), None)
-        if pianist_backup is not None:
-            activated = pianist_backup
+        def under_cap(musician_id: str) -> bool:
+            return int(month_counts.get(musician_id, 0)) < int(data.musicians.at[musician_id, "max_shows_per_month"])
+
+        free = [b.musician_id for b in ranked_backups.itertuples() if eligible(b.musician_id)]
+        candidates = [m for m in free if under_cap(m)] or free
+        activated = candidates[0] if candidates else None
+        if not still_has_pianist and activated is not None and activated not in pianist_ids:
+            # Losing the only pianist outranks the cap: an at-cap pianist beats an under-cap non-pianist.
+            activated = next((m for m in candidates + free if m in pianist_ids), activated)
 
     if activated is not None:
         typical = int(data.musicians.at[activated, "typical_songs"])
@@ -108,16 +133,16 @@ def handle_cancellation(data: Data, assignments: pd.DataFrame, backups: pd.DataF
                                  data.distance_to_facility(m.musician_id, s.facility_id)))
         if pool:
             additional_backup_id = pool[0].musician_id
-            covered += int(pool[0].typical_songs)
-            gap -= int(pool[0].typical_songs)
 
-    musician_count = len(roster) + (1 if additional_backup_id else 0)
-    has_pianist = still_has_pianist or (activated in pianist_ids) \
-        or (additional_backup_id in pianist_ids if additional_backup_id else False)
+    musician_count = len(roster)
+    has_pianist = still_has_pianist or (activated in pianist_ids)
 
     return CancellationPlan(
         show_id=show_id, cancelled_musician_id=cancelled_musician_id, activated_backup_id=activated,
         extra_song_requests=extra_requests, additional_backup_id=additional_backup_id,
+        additional_backup_songs=(int(data.musicians.at[additional_backup_id, "typical_songs"])
+                                 if additional_backup_id else 0),
+        additional_backup_is_pianist=additional_backup_id in pianist_ids,
         songs_covered=covered, songs_target=songs_target, musician_count=musician_count,
         has_pianist=has_pianist,
         needs_attention=(covered < songs_target or musician_count < int(fac.min_musicians) or not has_pianist),

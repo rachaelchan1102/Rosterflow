@@ -34,6 +34,7 @@ ABS_MAX_EXTRA_SONGS = 5   # how far past a musician's own stated max we'd ever a
 @dataclass
 class Weights:
     fully_staffed: int = 100_000   # per unit of: song shortfall, musician shortfall, missing pianist
+    stability: int = 5_000         # per previously-scheduled assignment dropped on a re-solve
     over_cap: int = 20_000         # per show over a musician's monthly cap — a release valve, not a target
     over_max_songs: int = 20_000   # per song asked beyond a musician's own stated max
     target_headcount: int = 2_500  # per musician short of a show's target headcount (~10), above the 3-min floor
@@ -51,9 +52,43 @@ class AssignmentResult:
     show_flags: pd.DataFrame       # show_id, musician_count, has_pianist, songs_total, songs_target, fully_staffed
 
 
+def compute_show_flags(data: Data, assignments: pd.DataFrame, show_ids: list[str] | None = None) -> pd.DataFrame:
+    """Per-show staffing status from a roster alone — used after a solve, and again after a
+    cancellation edits the roster directly without re-solving."""
+    ids = show_ids if show_ids is not None else list(data.shows[data.shows.period == "upcoming"].index)
+    pianist_ids = set(data.musicians[data.musicians.instrument == "piano"].musician_id)
+    rows = []
+    for show_id in ids:
+        fac = data.facilities.loc[data.shows.at[show_id, "facility_id"]]
+        roster = assignments[assignments.show_id == show_id]
+        songs_total = int(roster.songs.sum()) if len(roster) else 0
+        has_pianist = bool(set(roster.musician_id) & pianist_ids)
+        rows.append(dict(
+            show_id=show_id,
+            musician_count=len(roster),
+            has_pianist=has_pianist,
+            songs_total=songs_total,
+            songs_target=int(fac.songs_per_show),
+            fully_staffed=(len(roster) >= int(fac.min_musicians) and songs_total >= int(fac.songs_per_show)
+                          and has_pianist),
+        ))
+    return pd.DataFrame(rows, columns=["show_id", "musician_count", "has_pianist", "songs_total",
+                                       "songs_target", "fully_staffed"])
+
+
 def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Weights | None = None,
-                     time_limit_s: float = 30.0) -> AssignmentResult:
+                     time_limit_s: float = 30.0,
+                     locked: set[tuple[str, str]] | None = None,
+                     banned: set[tuple[str, str]] | None = None,
+                     banned_facilities: set[tuple[str, str]] | None = None,
+                     previous: pd.DataFrame | None = None) -> AssignmentResult:
+    """`locked` / `banned` are (musician_id, show_id) pairs; `banned_facilities` are
+    (musician_id, facility_id). A lock forces the pair on even if the availability data says
+    otherwise — the coordinator heard it directly — but a ban always wins over a lock.
+    `previous` (show_id, musician_id rows) is the schedule already in place: dropping any of
+    those pairs costs `weights.stability`, so a re-solve only moves people when it has to."""
     weights = weights or Weights()
+    locked, banned, banned_facilities = locked or set(), banned or set(), banned_facilities or set()
     shows = data.shows.loc[show_ids] if show_ids is not None else data.shows[data.shows.period == "upcoming"]
     fac_cols = ["songs_per_show", "target_musicians", "min_musicians", "max_musicians"]
     shows = shows.join(data.facilities[fac_cols], on="facility_id")
@@ -61,9 +96,14 @@ def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Wei
 
     model = cp_model.CpModel()
 
+    def is_banned(m: str, s: str, f: str) -> bool:
+        return (m, s) in banned or (m, f) in banned_facilities
+
     pairs = [(m.musician_id, s.show_id) for s in shows.itertuples() for m in musicians.itertuples()
-             if data.is_available(m.musician_id, s.show_id)
-             and data.within_guardian_range(m.musician_id, s.facility_id)]
+             if not is_banned(m.musician_id, s.show_id, s.facility_id)
+             and (((m.musician_id, s.show_id) in locked)
+                  or (data.is_available(m.musician_id, s.show_id)
+                      and data.within_guardian_range(m.musician_id, s.facility_id)))]
     pairs_by_show: dict[str, list[tuple[str, str]]] = {}
     pairs_by_musician: dict[str, list[tuple[str, str]]] = {}
     for m, s in pairs:
@@ -101,8 +141,17 @@ def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Wei
         if len(ms_pairs) > 1:
             model.Add(sum(x[p] for p in ms_pairs) <= 1)
 
+    for pair in locked:
+        if pair in x:
+            model.Add(x[pair] == 1)
+
     penalty_terms = [weights.over_max_songs * sum(over_max_songs_vars),
                      weights.extra_song_ask * sum(extra_song_vars)]
+
+    if previous is not None and len(previous):
+        kept = [x[(r.musician_id, r.show_id)] for r in previous.itertuples() if (r.musician_id, r.show_id) in x]
+        if kept:
+            penalty_terms.append(weights.stability * sum(1 - v for v in kept))
 
     # --- soft, big weight: monthly cap (a release valve, not a hard wall) ---
     show_month = pd.to_datetime(show_date).dt.to_period("M")
@@ -211,20 +260,7 @@ def solve_assignment(data: Data, show_ids: list[str] | None = None, weights: Wei
     assign_rows = [dict(show_id=s, musician_id=m, songs=solver.Value(y[(m, s)]))
                    for m, s in pairs if solver.Value(x[(m, s)]) == 1]
     assignments = pd.DataFrame(assign_rows, columns=["show_id", "musician_id", "songs"])
-
-    flag_rows = []
-    for s in shows.itertuples():
-        roster = assignments[assignments.show_id == s.show_id]
-        flag_rows.append(dict(
-            show_id=s.show_id,
-            musician_count=len(roster),
-            has_pianist=bool(set(roster.musician_id) & pianist_ids),
-            songs_total=int(roster.songs.sum()),
-            songs_target=int(s.songs_per_show),
-            fully_staffed=(len(roster) >= s.min_musicians and int(roster.songs.sum()) >= s.songs_per_show
-                          and bool(set(roster.musician_id) & pianist_ids)),
-        ))
-    show_flags = pd.DataFrame(flag_rows)
+    show_flags = compute_show_flags(data, assignments, list(shows.index))
 
     return AssignmentResult(status=status_name, objective_value=solver.ObjectiveValue(),
                             assignments=assignments, show_flags=show_flags)

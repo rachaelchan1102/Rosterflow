@@ -16,7 +16,6 @@ from optimizer.carpool import Car, SoloTransit
 from optimizer.data import Data
 
 ROTATION_LOOKBACK_MONTHS = 3
-NEAR_CAP_THRESHOLD = 0.9
 
 
 @dataclass
@@ -34,14 +33,6 @@ class Kpis:
     rotation_repeat_rate: float           # % of assignments that are repeat facility visits
 
 
-def compute_show_flags(assignment_result: AssignmentResult, backup_result: BackupResult) -> pd.DataFrame:
-    """Per-show table combining fully_staffed + backup_ready into one needs_attention flag —
-    this is what the control tower's show list (sorted by need for attention) reads from."""
-    merged = assignment_result.show_flags.merge(backup_result.show_flags, on="show_id", suffixes=("", "_backup"))
-    merged["needs_attention"] = ~merged.fully_staffed | ~merged.backup_ready
-    return merged
-
-
 def compute_capacity_utilization(data: Data, assignments: pd.DataFrame) -> tuple[float, float, pd.Series]:
     show_dates = data.shows.loc[assignments.show_id.unique(), "date"]
     months = pd.to_datetime(show_dates).dt.to_period("M").nunique() or 1
@@ -49,13 +40,6 @@ def compute_capacity_utilization(data: Data, assignments: pd.DataFrame) -> tuple
     caps = data.musicians["max_shows_per_month"] * months
     utilization = (played.reindex(data.musicians.index, fill_value=0) / caps).clip(upper=1.0)
     return float(utilization.mean()), float(utilization.std(ddof=0)), utilization
-
-
-def musicians_near_cap(data: Data, assignments: pd.DataFrame, threshold: float = NEAR_CAP_THRESHOLD) -> pd.Series:
-    """Musicians at or above `threshold` of their monthly cap — a control-tower exception
-    category in its own right (SPEC.md 12.1's "musicians near their cap")."""
-    _, _, utilization = compute_capacity_utilization(data, assignments)
-    return utilization[utilization >= threshold]
 
 
 def compute_network_cost(cars: list[Car], solo_transit: list[SoloTransit]) -> dict:
@@ -107,11 +91,3 @@ def compute_kpis(data: Data, assignment_result: AssignmentResult, cars: list[Car
         car_km_savings=net["car_km_savings"], solo_transit_count=net["solo_transit_count"],
         rotation_repeat_rate=compute_rotation_rate(data, assignment_result.assignments),
     )
-
-
-def exceptions_queue(assignment_result: AssignmentResult, backup_result: BackupResult) -> pd.DataFrame:
-    """Shows needing attention, sorted so the ones failing the hard fully-staffed bar come
-    before ones that are staffed but merely thin on backups."""
-    flags = compute_show_flags(assignment_result, backup_result)
-    queue = flags[flags.needs_attention].copy()
-    return queue.sort_values(["fully_staffed", "backup_ready"])

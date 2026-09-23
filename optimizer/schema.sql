@@ -5,7 +5,7 @@
 -- committing anything; the database enforcing the same constraint again is a backstop against a
 -- write that bypasses that Python layer, not something meant to silently cascade on its own.
 
-CREATE TABLE facilities (
+CREATE TABLE IF NOT EXISTS facilities (
     facility_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     region TEXT NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE facilities (
     preferred_slot TEXT NOT NULL
 );
 
-CREATE TABLE musicians (
+CREATE TABLE IF NOT EXISTS musicians (
     musician_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     age INTEGER NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE musicians (
     max_songs INTEGER NOT NULL
 );
 
-CREATE TABLE shows (
+CREATE TABLE IF NOT EXISTS shows (
     show_id TEXT PRIMARY KEY,
     facility_id TEXT NOT NULL REFERENCES facilities(facility_id),
     date DATE NOT NULL,
@@ -46,14 +46,14 @@ CREATE TABLE shows (
     period TEXT NOT NULL
 );
 
-CREATE TABLE availability (
+CREATE TABLE IF NOT EXISTS availability (
     musician_id TEXT NOT NULL REFERENCES musicians(musician_id),
     show_id TEXT NOT NULL REFERENCES shows(show_id),
     available SMALLINT NOT NULL CHECK (available IN (0, 1)),
     PRIMARY KEY (musician_id, show_id)
 );
 
-CREATE TABLE weekly_availability (
+CREATE TABLE IF NOT EXISTS weekly_availability (
     id SERIAL PRIMARY KEY,
     musician_id TEXT NOT NULL REFERENCES musicians(musician_id),
     weekday TEXT NOT NULL,
@@ -61,25 +61,64 @@ CREATE TABLE weekly_availability (
     end_time TEXT NOT NULL
 );
 
-CREATE TABLE distances (
+CREATE TABLE IF NOT EXISTS distances (
     musician_id TEXT NOT NULL REFERENCES musicians(musician_id),
     facility_id TEXT NOT NULL REFERENCES facilities(facility_id),
     distance_km DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (musician_id, facility_id)
 );
 
-CREATE TABLE musician_distances (
+CREATE TABLE IF NOT EXISTS musician_distances (
     m1 TEXT NOT NULL REFERENCES musicians(musician_id),
     m2 TEXT NOT NULL REFERENCES musicians(musician_id),
     km DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (m1, m2)
 );
 
-CREATE TABLE history_assignments (
+CREATE TABLE IF NOT EXISTS history_assignments (
     show_id TEXT NOT NULL REFERENCES shows(show_id),
     musician_id TEXT NOT NULL REFERENCES musicians(musician_id),
     planned_set_min INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('attended', 'late_cancel', 'no_show')),
     actual_set_min INTEGER NOT NULL,
     PRIMARY KEY (show_id, musician_id)
+);
+
+-- Workspace state for the real deployment: the draft and published schedules, plus the
+-- coordinator's locks and bans. No foreign keys here on purpose — these reference musicians and
+-- shows that a coordinator can delete, and the backend prunes stale rows itself rather than
+-- letting a delete of a musician fail because an old published schedule still mentions them.
+
+CREATE TABLE IF NOT EXISTS schedule_assignments (
+    kind TEXT NOT NULL CHECK (kind IN ('draft', 'published')),
+    show_id TEXT NOT NULL,
+    musician_id TEXT NOT NULL,
+    songs INTEGER NOT NULL,
+    PRIMARY KEY (kind, show_id, musician_id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_backups (
+    kind TEXT NOT NULL CHECK (kind IN ('draft', 'published')),
+    show_id TEXT NOT NULL,
+    musician_id TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    PRIMARY KEY (kind, show_id, musician_id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_locks (
+    musician_id TEXT NOT NULL,
+    show_id TEXT NOT NULL,
+    PRIMARY KEY (musician_id, show_id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_bans (
+    musician_id TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('show', 'facility')),
+    target_id TEXT NOT NULL,
+    PRIMARY KEY (musician_id, scope, target_id)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );

@@ -28,7 +28,7 @@ class BackupResult:
     show_flags: pd.DataFrame   # show_id, backup_count, has_pianist_backup, backup_ready
 
 
-def _recent_facility_counts(data: Data, shows: pd.DataFrame) -> dict[tuple[str, str], int]:
+def recent_facility_counts(data: Data, shows: pd.DataFrame) -> dict[tuple[str, str], int]:
     hist = data.history_assignments.merge(data.shows[["facility_id", "date"]], left_on="show_id", right_index=True)
     hist = hist[hist.status == "attended"]
     horizon_start = pd.to_datetime(shows["date"]).min()
@@ -37,12 +37,29 @@ def _recent_facility_counts(data: Data, shows: pd.DataFrame) -> dict[tuple[str, 
     return recent.groupby(["musician_id", "facility_id"]).size().to_dict()
 
 
+def backup_show_flags(backups: pd.DataFrame, show_ids: list[str], num_backups: int = NUM_BACKUPS) -> pd.DataFrame:
+    rows = []
+    for show_id in show_ids:
+        here = backups[backups.show_id == show_id]
+        has_pianist = bool(here.is_pianist.any()) if len(here) else False
+        rows.append(dict(show_id=show_id, backup_count=len(here), has_pianist_backup=has_pianist,
+                         backup_ready=(len(here) >= num_backups and has_pianist)))
+    return pd.DataFrame(rows, columns=["show_id", "backup_count", "has_pianist_backup", "backup_ready"])
+
+
 def assign_backups(data: Data, assignments: pd.DataFrame, show_ids: list[str] | None = None,
-                   num_backups: int = NUM_BACKUPS) -> BackupResult:
-    shows = data.shows.loc[show_ids] if show_ids is not None else data.shows.loc[assignments.show_id.unique()]
+                   num_backups: int = NUM_BACKUPS,
+                   excluded: set[tuple[str, str]] | None = None,
+                   already_backing: dict[str, set[str]] | None = None) -> BackupResult:
+    """`excluded` holds (musician_id, show_id) pairs that must never be a backup there (bans).
+    `already_backing` maps a date to musicians already used as a backup elsewhere that day —
+    needed when refilling one show's backups without re-ranking every other show's."""
+    excluded = excluded or set()
+    shows = (data.shows.loc[show_ids] if show_ids is not None
+             else data.shows[data.shows.period == "upcoming"])
     pianist_ids = set(data.musicians[data.musicians.instrument == "piano"].musician_id)
     played_count = assignments.groupby("musician_id").size().to_dict()
-    recent_counts = _recent_facility_counts(data, shows)
+    recent_counts = recent_facility_counts(data, shows)
 
     # Look up dates from the FULL show table, not the (possibly show_ids-filtered) `shows` above —
     # `assignments` can reference shows outside that filter (e.g. when re-ranking backups for just
@@ -62,7 +79,7 @@ def assign_backups(data: Data, assignments: pd.DataFrame, show_ids: list[str] | 
     # either way can leave some shows thin on a day where several facilities overlap and there
     # genuinely aren't enough uncommitted musicians to go around — that's a real finding for the
     # exceptions queue, not something this pass should try to paper over with more cleverness.
-    used_as_backup_today: dict[str, set[str]] = {}
+    used_as_backup_today: dict[str, set[str]] = {d: set(ids) for d, ids in (already_backing or {}).items()}
     rows = []
 
     for s in shows.sort_values("date").itertuples():
@@ -77,6 +94,7 @@ def assign_backups(data: Data, assignments: pd.DataFrame, show_ids: list[str] | 
             and m.musician_id not in roster
             and m.musician_id not in used_today
             and m.musician_id not in playing_elsewhere_today
+            and (m.musician_id, s.show_id) not in excluded
         ]
 
         def sort_key(m):
@@ -99,16 +117,4 @@ def assign_backups(data: Data, assignments: pd.DataFrame, show_ids: list[str] | 
                              is_pianist=m.musician_id in pianist_ids))
 
     backups = pd.DataFrame(rows, columns=["show_id", "musician_id", "rank", "is_pianist"])
-
-    flag_rows = []
-    for s in shows.itertuples():
-        here = backups[backups.show_id == s.show_id]
-        flag_rows.append(dict(
-            show_id=s.show_id,
-            backup_count=len(here),
-            has_pianist_backup=bool(here.is_pianist.any()),
-            backup_ready=(len(here) >= num_backups and bool(here.is_pianist.any())),
-        ))
-    show_flags = pd.DataFrame(flag_rows)
-
-    return BackupResult(backups=backups, show_flags=show_flags)
+    return BackupResult(backups=backups, show_flags=backup_show_flags(backups, list(shows.index), num_backups))
